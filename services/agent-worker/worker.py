@@ -5,6 +5,7 @@ import logging
 import subprocess
 import json
 from pathlib import Path
+from langfuse import Langfuse
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -13,6 +14,18 @@ from shared.queue import get_queue
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Initialize Langfuse client
+langfuse = None
+if os.getenv('LANGFUSE_PUBLIC_KEY') and os.getenv('LANGFUSE_SECRET_KEY'):
+    langfuse = Langfuse(
+        public_key=os.getenv('LANGFUSE_PUBLIC_KEY'),
+        secret_key=os.getenv('LANGFUSE_SECRET_KEY'),
+        host=os.getenv('LANGFUSE_HOST', 'https://cloud.langfuse.com')
+    )
+    logger.info("Langfuse observability enabled")
+else:
+    logger.info("Langfuse not configured - skipping observability")
 
 
 def setup_claude_code_settings():
@@ -54,6 +67,26 @@ def setup_claude_code_settings():
     # Enable all project MCP servers
     settings['enableAllProjectMcpServers'] = True
     
+    # Configure Langfuse Stop hook
+    langfuse_public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
+    langfuse_secret_key = os.getenv('LANGFUSE_SECRET_KEY')
+    
+    if langfuse_public_key and langfuse_secret_key:
+        settings['hooks'] = {
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python3 /app/langfuse_hook.py",
+                            "timeout": 30
+                        }
+                    ]
+                }
+            ]
+        }
+        logger.info("Configured Langfuse Stop hook for Claude Code")
+    
     # Check if we have custom env vars to apply
     custom_env = {}
     
@@ -68,6 +101,14 @@ def setup_claude_code_settings():
     
     if os.getenv('ANTHROPIC_DEFAULT_OPUS_MODEL'):
         custom_env['ANTHROPIC_DEFAULT_OPUS_MODEL'] = os.getenv('ANTHROPIC_DEFAULT_OPUS_MODEL')
+    
+    # Add Langfuse env vars for the hook
+    if langfuse_public_key and langfuse_secret_key:
+        custom_env['TRACE_TO_LANGFUSE'] = 'true'
+        custom_env['LANGFUSE_PUBLIC_KEY'] = langfuse_public_key
+        custom_env['LANGFUSE_SECRET_KEY'] = langfuse_secret_key
+        custom_env['LANGFUSE_HOST'] = os.getenv('LANGFUSE_HOST', 'http://langfuse:3000')
+        custom_env['LANGFUSE_BASE_URL'] = os.getenv('LANGFUSE_HOST', 'http://langfuse:3000')
     
     # Update env section if we have custom vars
     if custom_env:
@@ -266,52 +307,97 @@ Always respond by commenting on the issue with your findings or actions taken.""
     
     logger.info(f"Running Claude Code for {repo} issue #{issue_number} (auto_review={auto_review}, auto_triage={auto_triage})")
     
-    try:
-        # Run Claude Code in print mode (non-interactive)
-        env = {
-            **os.environ,
-            'GITHUB_PAT': os.getenv('GITHUB_PAT')
-        }
-        
-        # Add Anthropic API key (try both env var names)
-        anthropic_key = os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_AUTH_TOKEN')
-        if anthropic_key:
-            env['ANTHROPIC_API_KEY'] = anthropic_key
-            env['ANTHROPIC_AUTH_TOKEN'] = anthropic_key  # Some versions use this
-        
-        # Add optional Anthropic overrides
-        if os.getenv('ANTHROPIC_BASE_URL'):
-            env['ANTHROPIC_BASE_URL'] = os.getenv('ANTHROPIC_BASE_URL')
-        
-        # Check if repo has CLAUDE.md and include it
-        claude_md_content = get_claude_md(repo)
-        if claude_md_content:
-            logger.info(f"Found CLAUDE.md in {repo}, including in context")
-            prompt = f"{claude_md_content}\n\n---\n\n{prompt}"
-        
-        result = subprocess.run(
-            ['claude', '-p', prompt],
-            capture_output=True,
-            text=True,
-            timeout=600,  # 10 minute timeout
-            env=env
+    # Create Langfuse generation span for Claude CLI execution
+    if langfuse:
+        # Determine model name from env vars or use default
+        model_name = (
+            os.getenv('ANTHROPIC_DEFAULT_SONNET_MODEL') or 
+            os.getenv('ANTHROPIC_DEFAULT_OPUS_MODEL') or 
+            "claude-3-5-sonnet-20241022"
         )
         
-        if result.returncode != 0:
-            logger.error(f"Claude Code failed with return code {result.returncode}")
-            logger.error(f"stdout: {result.stdout}")
-            logger.error(f"stderr: {result.stderr}")
-            raise RuntimeError(f"Claude Code execution failed: {result.stderr or result.stdout}")
-        
-        logger.info("Claude Code completed successfully")
-        return result.stdout
-        
-    except subprocess.TimeoutExpired:
-        logger.error("Claude Code execution timed out after 10 minutes")
-        raise
-    except Exception as e:
-        logger.error(f"Error running Claude Code: {e}", exc_info=True)
-        raise
+        with langfuse.start_as_current_observation(
+            name="claude_cli_execution",
+            as_type="generation",
+            model=model_name,
+            model_parameters={"command": "claude -p"}
+        ) as generation:
+            generation.update(
+                input=prompt,
+                metadata={
+                    "repo": repo,
+                    "issue_number": issue_number,
+                    "auto_review": auto_review,
+                    "auto_triage": auto_triage,
+                    "command": command,
+                    "base_url": os.getenv('ANTHROPIC_BASE_URL', 'default'),
+                    "model_override": os.getenv('ANTHROPIC_DEFAULT_SONNET_MODEL', 'none')
+                }
+            )
+            
+            try:
+                response = _execute_claude_cli(prompt, repo)
+                
+                generation.update(
+                    output=response,
+                    level="DEFAULT"
+                )
+                
+                logger.info("Claude Code completed successfully")
+                return response
+                
+            except Exception as e:
+                logger.error(f"Error running Claude Code: {e}", exc_info=True)
+                generation.update(
+                    level="ERROR",
+                    status_message=str(e)
+                )
+                raise
+    else:
+        # No Langfuse, just execute
+        return _execute_claude_cli(prompt, repo)
+
+
+def _execute_claude_cli(prompt: str, repo: str) -> str:
+    """Execute Claude CLI command"""
+    env = {
+        **os.environ,
+        'GITHUB_PAT': os.getenv('GITHUB_PAT'),
+    }
+    
+    # Add Anthropic API key (try both env var names)
+    anthropic_key = os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_AUTH_TOKEN')
+    if anthropic_key:
+        env['ANTHROPIC_API_KEY'] = anthropic_key
+        env['ANTHROPIC_AUTH_TOKEN'] = anthropic_key
+    
+    # Add optional Anthropic overrides
+    if os.getenv('ANTHROPIC_BASE_URL'):
+        env['ANTHROPIC_BASE_URL'] = os.getenv('ANTHROPIC_BASE_URL')
+    
+    # Check if repo has CLAUDE.md and include it
+    claude_md_content = get_claude_md(repo)
+    if claude_md_content:
+        logger.info(f"Found CLAUDE.md in {repo}, including in context")
+        prompt = f"{claude_md_content}\n\n---\n\n{prompt}"
+    
+    result = subprocess.run(
+        ['claude', '-p', prompt],
+        capture_output=True,
+        text=True,
+        timeout=600,  # 10 minute timeout
+        env=env
+    )
+    
+    if result.returncode != 0:
+        error_msg = f"Claude Code execution failed: {result.stderr or result.stdout}"
+        logger.error(f"Claude Code failed with return code {result.returncode}")
+        logger.error(f"stdout: {result.stdout}")
+        logger.error(f"stderr: {result.stderr}")
+        raise RuntimeError(error_msg)
+    
+    logger.info("Claude Code completed successfully")
+    return result.stdout
 
 
 def get_claude_md(repo: str) -> str:
@@ -347,18 +433,65 @@ def process_request(repo: str, issue_number: int, command: str, auto_review: boo
     logger.info(f"Processing request for {repo} issue #{issue_number}")
     logger.info(f"Command: {command}")
     
-    try:
-        # Run Claude Code
-        response = run_claude_code(repo, issue_number, command, auto_review, auto_triage)
-        
-        logger.info(f"Claude Code response: {response[:200]}...")
-        logger.info("Request processed successfully")
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error processing request: {e}", exc_info=True)
-        raise
+    # Create Langfuse trace using context manager
+    if langfuse:
+        with langfuse.start_as_current_span(name="github_agent_request") as trace:
+            trace.update(
+                input={
+                    "repo": repo,
+                    "issue_number": issue_number,
+                    "command": command,
+                    "auto_review": auto_review,
+                    "auto_triage": auto_triage
+                },
+                metadata={
+                    "repo": repo,
+                    "issue_number": issue_number
+                }
+            )
+            
+            try:
+                # Run Claude Code
+                response = run_claude_code(repo, issue_number, command, auto_review, auto_triage)
+                
+                logger.info(f"Claude Code response: {response[:200]}...")
+                logger.info("Request processed successfully")
+                
+                # Update trace with success
+                trace.update(
+                    output={"response": response[:500]},  # Truncate for storage
+                    metadata={
+                        "status": "success",
+                        "response_length": len(response)
+                    }
+                )
+                
+                return response
+                
+            except Exception as e:
+                logger.error(f"Error processing request: {e}", exc_info=True)
+                
+                # Update trace with error
+                trace.update(
+                    output={"error": str(e)},
+                    metadata={"status": "error"},
+                    level="ERROR"
+                )
+                
+                raise
+            finally:
+                # Flush Langfuse events
+                langfuse.flush()
+    else:
+        # No Langfuse, just run the request
+        try:
+            response = run_claude_code(repo, issue_number, command, auto_review, auto_triage)
+            logger.info(f"Claude Code response: {response[:200]}...")
+            logger.info("Request processed successfully")
+            return response
+        except Exception as e:
+            logger.error(f"Error processing request: {e}", exc_info=True)
+            raise
 
 
 def main():
