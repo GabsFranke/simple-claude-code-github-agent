@@ -213,7 +213,7 @@ def setup_github_mcp():
         raise
 
 
-def run_claude_code(repo: str, issue_number: int, command: str, auto_review: bool = False) -> str:
+def run_claude_code(repo: str, issue_number: int, command: str, auto_review: bool = False, auto_triage: bool = False) -> str:
     """Run Claude Code CLI to process the GitHub issue"""
     
     if auto_review:
@@ -238,6 +238,17 @@ Focus on:
 - Suggestions for improvement
 
 Use both general comments and line-specific review comments for a comprehensive review."""
+    elif auto_triage:
+        # Specific prompt for automatic issue triage
+        prompt = f"""You are triaging issue #{issue_number} in {repo}.
+
+Analyze the issue and:
+1. Add appropriate labels (bug, enhancement, documentation, question, etc.)
+2. Assess priority and complexity
+3. Suggest next steps or ask clarifying questions if needed
+4. Post a comment with your analysis
+
+Use the GitHub MCP tools to read the issue details and add labels."""
     else:
         # Minimal, flexible prompt for manual commands
         prompt = f"""You are a helpful coding assistant with access to the {repo} repository via GitHub MCP tools.
@@ -253,7 +264,7 @@ Help the user with their request. You can:
 
 Always respond by commenting on the issue with your findings or actions taken."""
     
-    logger.info(f"Running Claude Code for {repo} issue #{issue_number} (auto_review={auto_review})")
+    logger.info(f"Running Claude Code for {repo} issue #{issue_number} (auto_review={auto_review}, auto_triage={auto_triage})")
     
     try:
         # Run Claude Code in print mode (non-interactive)
@@ -331,14 +342,14 @@ def get_claude_md(repo: str) -> str:
         return ""
 
 
-def process_request(repo: str, issue_number: int, command: str, auto_review: bool = False):
+def process_request(repo: str, issue_number: int, command: str, auto_review: bool = False, auto_triage: bool = False):
     """Process a single agent request"""
     logger.info(f"Processing request for {repo} issue #{issue_number}")
     logger.info(f"Command: {command}")
     
     try:
         # Run Claude Code
-        response = run_claude_code(repo, issue_number, command, auto_review)
+        response = run_claude_code(repo, issue_number, command, auto_review, auto_triage)
         
         logger.info(f"Claude Code response: {response[:200]}...")
         logger.info("Request processed successfully")
@@ -385,12 +396,13 @@ def main():
             issue_number = message.get('issue_number')
             command = message.get('command')
             auto_review = message.get('auto_review', False)
+            auto_triage = message.get('auto_triage', False)
             
             if not all([repo, issue_number, command]):
                 logger.error(f"Invalid message format: {message}")
                 return
             
-            process_request(repo, issue_number, command, auto_review)
+            process_request(repo, issue_number, command, auto_review, auto_triage)
             
         except Exception as e:
             logger.error(f"Error in callback: {e}", exc_info=True)

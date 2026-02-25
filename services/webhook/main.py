@@ -85,7 +85,42 @@ async def webhook(request: Request):
         
         logger.info(f"Received {event_type} event")
         
-        # Handle issue_comment events (manual /agent commands)
+        # Handle issues event (when issue is opened)
+        if event_type == "issues" and data.get("action") == "opened":
+            issue_body = data["issue"]["body"] or ""
+            issue_title = data["issue"]["title"]
+            command = parse_command(issue_body)
+            
+            if command:
+                # Explicit /agent command in issue body
+                request_data = {
+                    "repository": data["repository"]["full_name"],
+                    "issue_number": data["issue"]["number"],
+                    "command": command,
+                    "user": data["issue"]["user"]["login"],
+                }
+                
+                logger.info(f"Agent command detected in new issue: /agent {command}")
+            else:
+                # No /agent command - do automatic triage
+                request_data = {
+                    "repository": data["repository"]["full_name"],
+                    "issue_number": data["issue"]["number"],
+                    "command": f"Triage this issue: {issue_title}",
+                    "user": data["issue"]["user"]["login"],
+                    "auto_triage": True
+                }
+                
+                logger.info(f"Auto-triaging new issue #{data['issue']['number']}")
+            
+            logger.info(f"Processing request for {request_data['repository']} issue #{request_data['issue_number']}")
+            
+            # Publish to queue (async processing)
+            await queue.publish(request_data)
+            
+            return {"status": "accepted", "message": "Agent is processing your request"}
+        
+        # Handle issue_comment events (manual /agent commands in comments)
         if event_type == "issue_comment" and data.get("action") == "created":
             comment_body = data["comment"]["body"]
             command = parse_command(comment_body)
