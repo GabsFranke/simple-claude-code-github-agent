@@ -5,7 +5,7 @@ import hashlib
 import logging
 import sys
 from typing import Dict, Any
-from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
 # Add shared to path
@@ -15,7 +15,7 @@ from shared.queue import get_queue
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="SimpleGitHubAgent Webhook Service")
+app = FastAPI(title="SimpleClaudeCodeGitHubAgent Webhook Service")
 
 # Initialize queue
 queue = get_queue()
@@ -27,7 +27,6 @@ class WebhookPayload(BaseModel):
     issue: Dict[str, Any] = None
     comment: Dict[str, Any] = None
     repository: Dict[str, Any]
-    installation: Dict[str, Any] = None
 
 
 def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -50,14 +49,15 @@ def parse_command(comment_body: str) -> str:
     for line in lines:
         line = line.strip()
         if line.startswith('/agent'):
-            return line
+            # Return everything after /agent
+            return line[6:].strip()
     return ""
 
 
 @app.get("/")
 async def root():
     """Root endpoint."""
-    return {"status": "SimpleGitHubAgent webhook service is running"}
+    return {"status": "SimpleClaudeCodeGitHubAgent webhook service is running"}
 
 
 @app.get("/health")
@@ -85,7 +85,7 @@ async def webhook(request: Request):
         
         logger.info(f"Received {event_type} event")
         
-        # Handle issue_comment events
+        # Handle issue_comment events (manual /agent commands)
         if event_type == "issue_comment" and data.get("action") == "created":
             comment_body = data["comment"]["body"]
             command = parse_command(comment_body)
@@ -97,19 +97,39 @@ async def webhook(request: Request):
                     "issue_number": data["issue"]["number"],
                     "command": command,
                     "user": data["comment"]["user"]["login"],
-                    "installation_id": data.get("installation", {}).get("id"),
                 }
                 
-                logger.info(f"Agent command detected: {command}")
+                logger.info(f"Agent command detected: /agent {command}")
                 logger.info(f"Processing request for {request_data['repository']} issue #{request_data['issue_number']}")
                 
                 # Publish to queue (async processing)
-                import asyncio
-                asyncio.create_task(queue.publish(request_data))
+                await queue.publish(request_data)
                 
                 return {"status": "accepted", "message": "Agent is processing your request"}
         
-        return {"status": "ignored", "message": "Not an agent command"}
+        # Handle pull_request events (automatic review)
+        if event_type == "pull_request" and data.get("action") in ["opened", "synchronize"]:
+            pr_number = data["pull_request"]["number"]
+            pr_title = data["pull_request"]["title"]
+            pr_author = data["pull_request"]["user"]["login"]
+            
+            # Auto-review command
+            request_data = {
+                "repository": data["repository"]["full_name"],
+                "issue_number": pr_number,  # PRs are issues too
+                "command": f"Review this pull request: {pr_title}",
+                "user": pr_author,
+                "auto_review": True
+            }
+            
+            logger.info(f"Auto-reviewing PR #{pr_number} in {request_data['repository']}")
+            
+            # Publish to queue
+            await queue.publish(request_data)
+            
+            return {"status": "accepted", "message": "Agent will review this PR"}
+        
+        return {"status": "ignored", "message": "Event not handled"}
     
     except Exception as e:
         logger.error(f"Error processing webhook: {e}", exc_info=True)

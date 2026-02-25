@@ -1,356 +1,259 @@
-# SimpleGitHubAgent - GitHub Integration Architecture
+# Architecture
 
 ## Overview
 
-Enterprise-grade GitHub App integrated with Vertex AI agents, enabling automated PR creation from GitHub issues using slash commands.
+Simple Claude Code GitHub Agent is a lightweight system that uses Claude Code CLI with GitHub's official MCP server to provide automated code reviews and respond to developer commands.
 
 ## System Architecture
 
 ```
-GitHub Issue (/agent command)
-    ↓
-GitHub Webhook
-    ↓
-Cloud Run (Webhook Service)
-    ↓
-Pub/Sub Topic
-    ↓
-Cloud Run (Agent Worker)
-    ↓
-Vertex AI Agent ←→ GitHub MCP Server ←→ GitHub API
-    ↓
-Response posted back to GitHub
+┌─────────────────┐
+│  GitHub Events  │
+│  (PR, Comments) │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Webhook Service│
+│    (FastAPI)    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Message Queue  │
+│  Redis/Pub/Sub  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Worker Service │
+│  Spawns Claude  │
+│   Code CLI      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Claude Code    │
+│      CLI        │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  GitHub MCP     │
+│  Server (HTTP)  │
+│   (Official)    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   GitHub API    │
+└─────────────────┘
 ```
 
 ## Components
 
-### 1. GitHub MCP Server
-**Purpose**: Centralized GitHub API access with permission control
+### 1. Webhook Service
 
-**Responsibilities**:
-- Implements GitHub tools as MCP tools
-- Enforces permission-based access control (RBAC)
-- Manages GitHub App authentication
-- Provides audit logging
-- Handles rate limiting
+**Technology:** FastAPI (Python)  
+**Port:** 8080  
+**Purpose:** Receives GitHub webhook events
 
-**Tools Exposed**:
-- `create_branch` - Creates a new branch
-- `read_file` - Reads file content from repository
-- `update_file` - Creates or updates files
-- `create_pull_request` - Creates PRs
-- `list_files` - Lists repository files
-- `get_issue` - Retrieves issue details
-
-**Technology**: Python, MCP SDK, PyGithub
-
-### 2. Webhook Service
-**Purpose**: Receives and validates GitHub webhooks
-
-**Responsibilities**:
+**Responsibilities:**
 - Validates webhook signatures
-- Parses slash commands (`/agent`)
-- Extracts context (issue, repo, user)
-- Publishes to Pub/Sub
-- Returns 200 OK quickly (< 10s)
+- Parses GitHub events (issue_comment, pull_request)
+- Extracts `/agent` commands from comments
+- Publishes requests to message queue
+- Triggers automatic PR reviews
 
-**Endpoints**:
-- `POST /webhook` - GitHub webhook receiver
-- `GET /health` - Health check
+**Key Files:**
+- `services/webhook/main.py`
 
-**Technology**: FastAPI, Cloud Run
+### 2. Message Queue
 
-### 3. Agent Worker
-**Purpose**: Processes agent requests asynchronously
+**Technology:** Redis (self-hosted) or Google Pub/Sub (cloud)  
+**Purpose:** Decouples webhook from worker for async processing
 
-**Responsibilities**:
-- Subscribes to Pub/Sub messages
-- Connects to GitHub MCP Server
-- Wraps MCP tools as Vertex AI tools
-- Executes Vertex AI agent
-- Posts responses back to GitHub
-- Handles errors and retries
+**Benefits:**
+- Handles webhook timeouts (GitHub expects response in 10s)
+- Enables horizontal scaling of workers
+- Provides retry mechanism
+- Allows long-running agent tasks
 
-**Technology**: Python, Google ADK, MCP Client, Cloud Run
+**Key Files:**
+- `shared/queue.py` - Abstraction layer
 
-### 4. Vertex AI Agent
-**Purpose**: AI logic and decision making
+### 3. Worker Service
 
-**Responsibilities**:
-- Analyzes GitHub issues
-- Plans implementation approach
-- Calls GitHub tools to create branches, files, PRs
-- Generates code and commit messages
-- Provides status updates
+**Technology:** Python + Claude Code CLI (Node.js)  
+**Purpose:** Processes agent requests
 
-**Configuration**:
-- Model: Gemini 2.5 Flash
-- Sub-agents: Google Search, URL Context
-- Tools: GitHub MCP tools
+**Responsibilities:**
+- Subscribes to message queue
+- Configures Claude Code settings from environment
+- Fetches CLAUDE.md from repositories (if present)
+- Spawns Claude Code CLI with appropriate prompts
+- Handles both manual commands and automatic reviews
 
-## Project Structure
+**Key Files:**
+- `services/agent-worker/worker.py`
 
-```
-vertex-github-agent/
-├── services/
-│   ├── webhook/
-│   │   ├── main.py                # FastAPI webhook receiver
-│   │   ├── github_auth.py         # GitHub App JWT authentication
-│   │   ├── models.py              # Request/response models
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   │
-│   ├── agent-worker/
-│   │   ├── agent.py              # Vertex AI agent definition
-│   │   ├── worker.py             # Pub/Sub subscriber
-│   │   ├── mcp_tools.py          # MCP tool wrappers
-│   │   ├── github_poster.py      # Posts responses to GitHub
-│   │   ├── requirements.txt
-│   │   └── Dockerfile
-│   │
-│   └── github-mcp-server/
-│       ├── server.py             # MCP server implementation
-│       ├── github_tools.py       # GitHub API tool implementations
-│       ├── permissions.py        # RBAC permission definitions
-│       ├── auth.py               # GitHub App token management
-│       ├── requirements.txt
-│       └── Dockerfile
-│
-├── shared/
-│   ├── models.py                 # Shared Pydantic models
-│   ├── config.py                 # Configuration management
-│   └── mcp_client.py            # MCP client wrapper
-│
-├── infrastructure/
-│   ├── pubsub.tf                # Pub/Sub topic and subscriptions
-│   ├── cloud_run.tf             # Cloud Run services
-│   ├── iam.tf                   # IAM roles and permissions
-│   └── secrets.tf               # Secret Manager configuration
-│
-├── tests/
-│   ├── test_webhook.py
-│   ├── test_agent.py
-│   └── test_mcp_server.py
-│
-├── .env.example
-├── docker-compose.yml           # Local development
-├── README.md
-└── PROGRESS.md
-```
+### 4. Claude Code CLI
+
+**Technology:** Node.js CLI tool by Anthropic  
+**Purpose:** Autonomous coding agent
+
+**Capabilities:**
+- Reads and analyzes code
+- Creates branches and commits
+- Opens pull requests
+- Posts comments and reviews
+- Executes bash commands
+- Iterates on feedback
+
+**Configuration:**
+- `~/.claude/settings.json` - Permissions and model settings
+- `~/.claude/mcp.json` - MCP server configurations
+
+### 5. GitHub MCP Server
+
+**Technology:** HTTP-based MCP server by GitHub  
+**Endpoint:** `https://api.githubcopilot.com/mcp`  
+**Authentication:** GitHub Personal Access Token
+
+**Tools Provided:**
+- `read_file` - Read file contents
+- `list_files` - List directory contents
+- `create_branch` - Create new branches
+- `update_file` - Create/update files
+- `create_pull_request` - Open PRs
+- `get_issue` - Get issue details
+- And more...
 
 ## Data Flow
 
-### Issue to PR Flow
+### Automatic PR Review
 
-1. **User Action**
-   - Creates GitHub issue: "Add login button to homepage"
-   - Comments: `/agent create a PR for this`
+1. Developer opens PR
+2. GitHub sends `pull_request` webhook
+3. Webhook service receives event
+4. Webhook publishes to queue: `{repo, pr_number, command: "Review this PR", auto_review: true}`
+5. Worker picks up message
+6. Worker spawns Claude Code with review prompt
+7. Claude Code uses GitHub MCP to read PR diff
+8. Claude Code posts review comments
+9. Developer sees review on GitHub
 
-2. **Webhook Reception**
-   - GitHub sends webhook to Cloud Run
-   - Webhook service validates signature
-   - Extracts: repo, issue number, command, user
+### Manual Command
 
-3. **Message Publishing**
-   - Publishes to Pub/Sub topic: `agent-requests`
-   - Message includes: issue context, repository info, command
+1. Developer comments `/agent explain this function`
+2. GitHub sends `issue_comment` webhook
+3. Webhook service parses command
+4. Webhook publishes to queue: `{repo, issue_number, command: "explain this function"}`
+5. Worker picks up message
+6. Worker checks for CLAUDE.md in repo
+7. Worker spawns Claude Code with command
+8. Claude Code uses GitHub MCP to read code
+9. Claude Code posts explanation as comment
+10. Developer sees response on GitHub
 
-4. **Agent Processing**
-   - Worker receives message from Pub/Sub
-   - Initializes Vertex AI agent
-   - Connects to GitHub MCP Server
+## Deployment Options
 
-5. **Agent Execution**
-   - Agent analyzes issue content
-   - Plans implementation
-   - Calls MCP tools:
-     - `create_branch("feature/login-button")`
-     - `read_file("index.html")`
-     - `update_file("index.html", new_content)`
-     - `create_pull_request("Add login button", "Fixes #123")`
+### Self-Hosted (Development)
 
-6. **Response**
-   - Worker posts comment to issue
-   - "✅ Created PR #124 with login button implementation"
-   - Links to the new PR
+**Infrastructure:**
+- Docker Compose
+- Redis container
+- Local ngrok tunnel
 
-## Authentication & Security
+**Pros:**
+- Easy to set up
+- Free (except API costs)
+- Full control
 
-### GitHub App Authentication
-- **App ID**: From GitHub App settings
-- **Client ID**: From GitHub App settings
-- **Installation ID**: From app installation URL
-- **Private Key**: Stored in Secret Manager
+**Cons:**
+- Not production-ready
+- Requires always-on machine
+- Manual scaling
 
-### Token Flow
-1. Generate JWT using App private key
-2. Exchange JWT for installation access token
-3. Use installation token for GitHub API calls
-4. Tokens expire after 1 hour (auto-refresh)
+### Cloud (Production)
 
-### Webhook Security
-- Validate webhook signature using webhook secret
-- Verify payload authenticity
-- Rate limiting per installation
+**Infrastructure:**
+- Google Cloud Run (webhook + worker)
+- Google Pub/Sub (message queue)
+- Cloud Load Balancer
 
-### MCP Server Security
-- Agent identity verification
-- Permission-based tool access
-- Audit logging of all operations
+**Pros:**
+- Auto-scaling
+- High availability
+- Managed infrastructure
 
-## Scalability Considerations
+**Cons:**
+- More complex setup
+- Cloud costs
+
+## Security
+
+### Authentication
+
+- **GitHub:** Personal Access Token with `repo` scope
+- **Anthropic:** API key for Claude Code
+- **Webhooks:** HMAC signature verification
+
+### Permissions
+
+Claude Code permissions configured in `~/.claude/settings.json`:
+- Allow: Read, Write, Edit, Bash, MCP tools
+- Deny: Empty (trust Claude Code's judgment)
+- Ask: Empty (auto-approve allowed tools)
+
+### Best Practices
+
+- Store secrets in environment variables
+- Use webhook signature verification
+- Limit GitHub PAT scope to required repos
+- Review Claude Code's actions in logs
+- Use CLAUDE.md to set repository-specific rules
+
+## Scalability
 
 ### Horizontal Scaling
-- All services are stateless
-- Cloud Run auto-scales based on load
-- Pub/Sub handles message buffering
 
-### Rate Limiting
-- GitHub API: 5,000 requests/hour per installation
-- MCP server implements token bucket algorithm
-- Queue requests during rate limit periods
+- Multiple worker instances can subscribe to same queue
+- Each worker processes messages independently
+- Redis/Pub/Sub handles distribution
 
-### Cost Optimization
-- Cloud Run scales to zero when idle
-- Pub/Sub pay-per-message
-- Vertex AI pay-per-token
+### Performance
 
-### Performance Targets
-- Webhook response: < 1s
-- Agent processing: < 30s for simple tasks
-- End-to-end: < 60s for PR creation
+- Webhook responds immediately (< 100ms)
+- Worker processes in background (1-10 minutes)
+- Claude Code timeout: 10 minutes per request
 
-## Monitoring & Observability
+### Limits
+
+- GitHub API rate limits: 5000 requests/hour (with PAT)
+- Anthropic API rate limits: Varies by plan
+- Claude Code: One request at a time per worker
+
+## Monitoring
+
+### Logs
+
+- Webhook: Request/response logs
+- Worker: Claude Code output, errors
+- Queue: Message counts, processing times
 
 ### Metrics
-- Webhook latency
-- Agent execution time
-- GitHub API rate limit usage
-- Error rates by component
-- Pub/Sub message age
 
-### Logging
-- Structured JSON logs
-- Request tracing with correlation IDs
-- Agent decision logging
-- GitHub API call logging
-
-### Alerting
-- Webhook failures
-- Agent errors
-- Rate limit approaching
-- Pub/Sub message backlog
-
-## Development Phases
-
-### Phase 1: Local Development (Current)
-- [ ] Set up local development environment
-- [ ] Build GitHub MCP Server
-- [ ] Create basic Vertex AI agent
-- [ ] Test locally with mock webhooks
-- [ ] Verify end-to-end flow
-
-### Phase 2: Cloud Deployment
-- [ ] Deploy GitHub MCP Server to Cloud Run
-- [ ] Deploy Webhook Service
-- [ ] Deploy Agent Worker
-- [ ] Configure Pub/Sub
-- [ ] Set up Secret Manager
-- [ ] Configure GitHub App webhook URL
-
-### Phase 3: Production Hardening
-- [ ] Add comprehensive error handling
-- [ ] Implement retry logic
-- [ ] Add monitoring and alerting
-- [ ] Set up CI/CD pipeline
-- [ ] Load testing
-- [ ] Security audit
-
-### Phase 4: Feature Expansion
-- [ ] Add multi-agent support
-- [ ] Implement more GitHub tools
-- [ ] Add code review capabilities
-- [ ] Support multiple repositories
-- [ ] Add user preferences
-
-## Technology Stack
-
-### Core Technologies
-- **Language**: Python 3.11+
-- **Agent Framework**: Google ADK (Agent Development Kit)
-- **AI Model**: Gemini 2.5 Flash
-- **Protocol**: Model Context Protocol (MCP)
-
-### Infrastructure
-- **Cloud Platform**: Google Cloud Platform
-- **Compute**: Cloud Run (serverless containers)
-- **Messaging**: Pub/Sub
-- **Secrets**: Secret Manager
-- **IaC**: Terraform
-
-### Libraries & Frameworks
-- **Web Framework**: FastAPI
-- **GitHub API**: PyGithub
-- **MCP**: mcp Python SDK
-- **Validation**: Pydantic
-- **Testing**: pytest
-- **Async**: asyncio
-
-## Configuration
-
-### Environment Variables
-
-**Webhook Service**:
-```
-GITHUB_APP_ID=<your_app_id>
-GITHUB_CLIENT_ID=<your_client_id>
-GITHUB_WEBHOOK_SECRET=<secret>
-GITHUB_PRIVATE_KEY=<secret>
-PUBSUB_TOPIC=agent-requests
-GCP_PROJECT_ID=<project>
-```
-
-**Agent Worker**:
-```
-PUBSUB_SUBSCRIPTION=agent-requests-sub
-MCP_SERVER_URL=<mcp-server-url>
-GITHUB_APP_ID=<your_app_id>
-GITHUB_PRIVATE_KEY=<secret>
-GCP_PROJECT_ID=<project>
-VERTEX_AI_LOCATION=us-central1
-```
-
-**GitHub MCP Server**:
-```
-GITHUB_APP_ID=<your_app_id>
-GITHUB_PRIVATE_KEY=<secret>
-MCP_TRANSPORT=stdio
-LOG_LEVEL=INFO
-```
+- Requests processed
+- Success/failure rates
+- Average processing time
+- Queue depth
 
 ## Future Enhancements
 
-### Multi-Agent Architecture
-- Specialized agents for different tasks
-- Agent orchestration layer
-- Per-agent permission management
-
-### Advanced Features
-- Code review automation
-- Test generation
-- Documentation updates
-- Issue triage and labeling
-- Release automation
-
-### Integration Expansion
-- Slack notifications
-- Jira integration
-- CI/CD pipeline integration
-- Analytics dashboard
-
-## References
-
-- [GitHub Apps Documentation](https://docs.github.com/en/apps)
-- [Model Context Protocol](https://modelcontextprotocol.io/)
-- [Google ADK Documentation](https://cloud.google.com/vertex-ai/docs/agent-builder)
-- [Cloud Run Documentation](https://cloud.google.com/run/docs)
+- [ ] Support for GitHub App authentication (bot identity)
+- [ ] Multi-repository management dashboard
+- [ ] Custom review rules per repository
+- [ ] Integration with CI/CD pipelines
+- [ ] Slack/Discord notifications
+- [ ] Analytics and insights

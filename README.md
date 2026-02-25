@@ -1,14 +1,22 @@
-# SimpleGitHubAgent - GitHub Integration
+# Simple Claude Code GitHub Agent
 
-AI-powered GitHub agent that creates pull requests from issues using Gemini and Model Context Protocol (MCP).
+AI-powered GitHub agent that automatically reviews pull requests and responds to commands using Claude Code CLI and GitHub's official MCP server.
+
+## Features
+
+- 🤖 **Automatic PR Reviews** - Reviews code quality, security, and best practices when PRs are opened
+- 💬 **Command-based Interaction** - Respond to `/agent` commands in issues and PRs
+- 🔧 **Code Analysis** - Answers questions about your codebase
+- 🚀 **Autonomous Actions** - Can create branches, make changes, and open PRs
+- 📝 **Per-repo Customization** - Support for CLAUDE.md configuration files
 
 ## Quick Start
 
 ### Prerequisites
 
-- Docker & Docker Compose (recommended) OR Python 3.11+
-- GitHub App (create at https://github.com/settings/apps/new)
-- Google AI API Key (get from https://aistudio.google.com/apikey)
+- Docker & Docker Compose (recommended) OR Node.js 18+ & Python 3.11+
+- GitHub Personal Access Token with `repo` scope ([create one](https://github.com/settings/personal-access-tokens/new))
+- Anthropic API Key ([get from console](https://console.anthropic.com/))
 - ngrok (for local testing) or cloud hosting
 
 ### Setup
@@ -20,13 +28,12 @@ AI-powered GitHub agent that creates pull requests from issues using Gemini and 
 cp .env.example .env
 
 # Edit .env with your credentials:
-# - GITHUB_APP_ID, GITHUB_CLIENT_ID, GITHUB_INSTALLATION_ID
-# - GITHUB_PRIVATE_KEY_PATH (path to your .pem file)
-# - GOOGLE_API_KEY (from Google AI Studio)
-# - QUEUE_TYPE=redis (for Docker) or pubsub (for cloud)
+# - ANTHROPIC_AUTH_TOKEN (from Anthropic Console)
+# - GITHUB_PAT (Personal Access Token with repo scope)
+# - GITHUB_WEBHOOK_SECRET (any random string)
 ```
 
-2. **Run with Docker (recommended):**
+2. **Run with Docker:**
 
 ```bash
 # Start all services
@@ -45,132 +52,117 @@ docker-compose down
 ngrok http 8080
 ```
 
-Update your GitHub App webhook URL with the ngrok URL.
+4. **Configure GitHub webhook:**
 
-4. **Manual setup (without Docker):**
+Go to your repository Settings → Webhooks → Add webhook:
+- Payload URL: `https://your-ngrok-url.ngrok.io/webhook`
+- Content type: `application/json`
+- Secret: (same as GITHUB_WEBHOOK_SECRET in .env)
+- Events: Select "Issue comments" and "Pull requests"
 
-See [START.md](START.md) for detailed instructions.
+## Usage
+
+### Automatic PR Reviews
+
+When you open a PR, the agent automatically reviews it and posts:
+- General code review summary
+- Inline comments on specific lines
+- Suggestions for improvements
+
+### Manual Commands
+
+Comment on any issue or PR with `/agent` followed by your request:
+
+```
+/agent explain how authentication works
+/agent review the security of this code
+/agent create a PR to add error handling
+/agent what does this function do?
+```
+
+### Per-Repository Configuration
+
+Add a `CLAUDE.md` file to your repository root with custom instructions:
+
+```markdown
+# Agent Instructions
+
+When working on this project:
+- Always run tests before creating PRs
+- Follow the existing code style
+- Update documentation if you change APIs
+```
 
 ## Architecture
 
 ```
-GitHub Issue → Webhook → Message Queue → Agent Worker → Gemini Agent
-                            (Redis)                           ↓
-                                                        GitHub MCP Server
-                                                              ↓
-                                                         GitHub API
+GitHub Event → Webhook → Redis Queue → Worker → Claude Code CLI
+                                                      ↓
+                                              GitHub MCP Server
+                                                   (Official)
+                                                      ↓
+                                                 GitHub API
 ```
 
-The system uses a message queue architecture that works for both self-hosted (Redis) and cloud (Google Pub/Sub) deployments.
-
-## Components
-
-### 1. GitHub MCP Server
-Provides GitHub API access through Model Context Protocol with permission management.
-
-**Tools:**
-- `read_file` - Read files from repository
-- `list_files` - List directory contents
-- `create_branch` - Create new branches
-- `update_file` - Create/update files
-- `create_pull_request` - Create PRs
-- `get_issue` - Get issue details
-
-### 2. Agent Worker
-Subscribes to message queue and runs the Gemini agent with GitHub tools.
-
-### 3. Webhook Service
-Receives GitHub webhooks and publishes to message queue.
-
-### 4. Message Queue
-- Redis for self-hosted/development
-- Google Pub/Sub for cloud production
-
-## Usage
-
-1. Create an issue in your GitHub repository
-2. Comment on the issue: `/agent create a PR for this`
-3. The agent will:
-   - Analyze the issue
-   - Create a branch
-   - Make necessary changes
-   - Create a pull request
-   - Comment with the PR link
+**Components:**
+- **Webhook Service** - Receives GitHub events (FastAPI)
+- **Worker** - Spawns Claude Code CLI instances to process requests
+- **Message Queue** - Redis (self-hosted) or Google Pub/Sub (cloud)
+- **Claude Code CLI** - Autonomous coding agent with GitHub MCP access
 
 ## Configuration
 
-See `.env.example` for all configuration options.
-
 ### Environment Variables
 
+- `ANTHROPIC_AUTH_TOKEN`: Your Anthropic API key
+- `ANTHROPIC_BASE_URL`: (Optional) Override API endpoint for alternative providers
+- `ANTHROPIC_DEFAULT_SONNET_MODEL`: (Optional) Override model name
+- `GITHUB_PAT`: GitHub Personal Access Token with `repo` scope
+- `GITHUB_WEBHOOK_SECRET`: Secret for webhook signature verification
 - `QUEUE_TYPE`: `redis` (self-hosted) or `pubsub` (cloud)
-- `REDIS_HOST`: Redis host (default: localhost)
-- `REDIS_PORT`: Redis port (default: 6379)
-- `PUBSUB_PROJECT_ID`: Google Cloud project ID (for cloud deployment)
-- `PUBSUB_TOPIC`: Pub/Sub topic name (for cloud deployment)
-- `PUBSUB_SUBSCRIPTION`: Pub/Sub subscription name (for cloud deployment)
 
-### GitHub App Setup
+### Using Alternative AI Providers
 
-1. Go to GitHub Settings → Developer settings → GitHub Apps
-2. Create a new GitHub App with:
-   - Webhook URL: `https://your-domain/webhook`
-   - Permissions:
-     - Repository contents: Read & Write
-     - Issues: Read & Write
-     - Pull requests: Read & Write
-   - Subscribe to events:
-     - Issue comments
-3. Generate and download private key
-4. Install the app on your repositories
+You can use alternative Anthropic-compatible providers like [z.ai](https://z.ai):
+
+```bash
+# .env
+ANTHROPIC_AUTH_TOKEN=your_zai_api_key
+ANTHROPIC_BASE_URL=https://api.z.ai/v1
+ANTHROPIC_DEFAULT_SONNET_MODEL=glm-4.7
+```
 
 ## Development
 
 ### Project Structure
 ```
-SimpleGitHubAgent/
+simple-claude-code-github-agent/
 ├── services/
-│   ├── github-mcp-server/    # MCP server for GitHub API
-│   ├── agent-worker/         # Gemini agent worker
+│   ├── agent-worker/         # Claude Code worker
 │   └── webhook/              # Webhook receiver
 ├── shared/
 │   └── queue.py             # Message queue abstraction
 ├── docker-compose.yml       # Docker Compose config
-├── ARCHITECTURE.md          # Complete system design
-├── PROGRESS.md             # Development tracker
-└── START.md                # Detailed setup guide
+└── docs/                    # Documentation
 ```
 
-### Documentation
+### Manual Setup (without Docker)
 
-- **[START.md](START.md)** - Step-by-step setup guide
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Complete technical architecture
-- **[PROGRESS.md](PROGRESS.md)** - Development checklist
+See [START.md](START.md) for detailed instructions.
 
 ### Testing
 
-With Docker:
 ```bash
-# View all logs
+# View logs
 docker-compose logs -f
 
 # View specific service
-docker-compose logs -f webhook
 docker-compose logs -f worker
+docker-compose logs -f webhook
+
+# Check status
+docker-compose ps
 ```
-
-Without Docker (manual):
-```bash
-# Test webhook service
-cd services/webhook
-python main.py
-
-# Test agent worker
-cd services/agent-worker
-python worker.py
-```
-
-Note: The MCP server starts automatically when the agent needs it - no need to run it separately.
 
 ## Deployment
 
@@ -181,11 +173,12 @@ docker-compose up -d
 ```
 
 ### Cloud (Production)
-Deploy to Google Cloud Run with Pub/Sub. See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed instructions.
+Deploy to Google Cloud Run with Pub/Sub. See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 
-## Progress
+## Documentation
 
-Track development progress in [PROGRESS.md](PROGRESS.md).
+- **[START.md](START.md)** - Detailed setup guide
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture
 
 ## License
 
