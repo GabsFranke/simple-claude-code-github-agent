@@ -61,9 +61,10 @@ def error(msg: str) -> None:
 
 # ----------------- State locking (best-effort) -----------------
 class FileLock:
-    def __init__(self, path: Path, timeout_s: float = 2.0):
+    def __init__(self, path: Path, timeout_s: float = None):
         self.path = path
-        self.timeout_s = timeout_s
+        # Allow configurable timeout, default to 10s for parallel workers
+        self.timeout_s = timeout_s or float(os.getenv('LANGFUSE_LOCK_TIMEOUT_S', '10.0'))
         self._fh = None
 
     def __enter__(self):
@@ -79,6 +80,8 @@ class FileLock:
                     break
                 except BlockingIOError:
                     if time.time() > deadline:
+                        # Log warning when lock timeout is hit
+                        print(f"Warning: Failed to acquire lock on {self.path} after {self.timeout_s}s", file=sys.stderr)
                         break
                     time.sleep(0.05)
         except Exception:

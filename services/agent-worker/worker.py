@@ -35,6 +35,23 @@ else:
 _github_token_cache = {'token': None, 'expires_at': 0}
 
 
+def validate_github_private_key(private_key: str) -> bool:
+    """Validate that the private key is in valid PEM format"""
+    if not private_key:
+        return False
+    
+    # Check for PEM header/footer
+    if not ('-----BEGIN' in private_key and '-----END' in private_key):
+        return False
+    
+    # Check for RSA or PRIVATE KEY markers
+    valid_markers = ['RSA PRIVATE KEY', 'PRIVATE KEY', 'EC PRIVATE KEY']
+    if not any(marker in private_key for marker in valid_markers):
+        return False
+    
+    return True
+
+
 def get_github_app_token():
     """Generate a GitHub App installation access token (cached for 10 minutes)"""
     # Check cache first
@@ -47,6 +64,14 @@ def get_github_app_token():
     
     if not all([app_id, private_key, installation_id]):
         logger.info("GitHub App credentials not found, falling back to PAT")
+        return os.getenv('GITHUB_PAT')
+    
+    # Validate private key format
+    if not validate_github_private_key(private_key):
+        logger.error("GITHUB_PRIVATE_KEY is not in valid PEM format")
+        logger.error("Expected format: -----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----")
+        logger.error("Make sure the key includes header, footer, and is properly formatted")
+        logger.info("Falling back to PAT")
         return os.getenv('GITHUB_PAT')
     
     try:
@@ -142,7 +167,7 @@ def setup_claude_code_settings():
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "python3 /app/langfuse_hook.py",
+                            "command": "python3 /app/hooks/langfuse_hook.py",
                             "timeout": 30
                         }
                     ]

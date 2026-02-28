@@ -19,8 +19,8 @@ COPY services/agent-worker/requirements.txt ./services/agent-worker/
 RUN pip3 install --no-cache-dir -r services/agent-worker/requirements.txt --break-system-packages
 
 COPY services/agent-worker/worker.py ./services/agent-worker/
-COPY langfuse_hook.py /app/langfuse_hook.py
-RUN chmod +x /app/langfuse_hook.py
+COPY hooks/langfuse_hook.py /app/hooks/langfuse_hook.py
+RUN chmod +x /app/hooks/langfuse_hook.py
 
 WORKDIR /app/services/agent-worker
 
