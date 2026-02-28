@@ -14,6 +14,7 @@ AI-powered GitHub agent that automatically reviews pull requests and responds to
 - 💬 **Command-based Interaction** - Respond to `/agent` commands in issues and PRs
 - 🔧 **Code Analysis** - Answers questions about your codebase
 - 🚀 **Autonomous Actions** - Can create branches, make changes, and open PRs
+- 🤝 **Specialized Subagents** - Delegates tasks to focused agents (context-gathering, code review, bug investigation, test writing)
 - 📝 **Per-repo Customization** - Support for CLAUDE.md configuration files
 - 📊 **Full Observability** - Self-hosted Langfuse integration for tracing tool calls and reasoning
 
@@ -144,7 +145,38 @@ When working on this project:
 - Update documentation if you change APIs
 ```
 
+### Subagents
+
+The agent uses specialized subagents for comprehensive PR reviews:
+
+**PR Review Subagents (run automatically):**
+- **architecture-reviewer**: Evaluates design patterns, SOLID principles, and system architecture
+- **security-reviewer**: Scans for vulnerabilities (SQL injection, XSS, auth issues, etc.)
+- **bug-hunter**: Identifies potential bugs, edge cases, and error handling issues
+- **code-quality-reviewer**: Reviews code style, readability, and maintainability
+
+**General Purpose Subagents:**
+- **context-gatherer**: Explores codebase to find relevant files
+- **bug-investigator**: Traces bugs to root causes
+- **test-writer**: Creates comprehensive test cases
+
+The main agent coordinates these subagents, synthesizes their findings, and posts a unified review.
+
+You can also request specific subagents manually:
+
+```
+/agent use security-reviewer to check for vulnerabilities
+/agent have architecture-reviewer evaluate this design
+/agent ask bug-hunter to find edge cases in the validation logic
+```
+
 ## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system design.
+
+For information about subagents, see [SUBAGENTS.md](docs/SUBAGENTS.md).
+
+For PR review flow details, see [docs/PR_REVIEW_FLOW.md](docs/PR_REVIEW_FLOW.md).
 
 ```
 GitHub Event → Webhook → Redis Queue → Worker → Claude Code CLI

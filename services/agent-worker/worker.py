@@ -345,49 +345,68 @@ def run_claude_code(repo: str, issue_number: int, command: str, auto_review: boo
     """Run Claude Code CLI to process the GitHub issue"""
     
     if auto_review:
-        # Specific prompt for automatic PR reviews - matches Gemini Code Assist pattern
-        prompt = f"""You are reviewing PR #{issue_number} in {repo}.
+        # Coordinator prompt that delegates to specialized subagents
+        prompt = f"""You are coordinating a comprehensive code review for PR #{issue_number} in {repo}.
 
-Provide a thorough code review following Gemini Code Assist's two-step approach:
+Your workflow:
 
-STEP 1: Post a summary comment
-- Use add_issue_comment to post a "Code Review" summary in the conversation tab
-- Include overall assessment and key findings
-- This is a regular issue comment
+STEP 1: Delegate to specialized subagents
+Run these subagents in parallel to analyze the PR from different perspectives:
 
-STEP 2: Add inline review comments (ONLY if there are specific code issues)
+a) Architecture review:
+   claude subagent architecture-reviewer "Review the architectural decisions and design patterns in this PR"
+
+b) Security review:
+   claude subagent security-reviewer "Identify security vulnerabilities and risks in this PR"
+
+c) Bug hunting:
+   claude subagent bug-hunter "Find potential bugs, edge cases, and error handling issues in this PR"
+
+d) Code quality review:
+   claude subagent code-quality-reviewer "Review code quality, style, and maintainability in this PR"
+
+STEP 2: Synthesize results
+Collect and analyze the JSON outputs from all subagents. Prioritize findings by severity.
+
+STEP 3: Post summary comment
+Use add_issue_comment to post a comprehensive "Code Review" summary:
+- Overall assessment
+- Key findings by category (Security, Bugs, Architecture, Code Quality)
+- Count of issues by severity
+- Positive notes about good practices
+- This is a regular issue comment in the conversation tab
+
+STEP 4: Add inline review comments (if there are specific issues)
 Use the THREE-STEP review workflow:
 
 a) Create pending review:
    - Tool: pull_request_review_write
    - method: "create"
-   - Do NOT include "event" parameter (this keeps it pending)
+   - Do NOT include "event" parameter (keeps it pending)
    - Do NOT include "comments" array
-   - body: Brief note like "Detailed review findings"
+   - body: "Detailed review findings from automated analysis"
 
-b) Add each inline comment:
+b) Add inline comments for top priority issues:
    - Tool: add_comment_to_pending_review
-   - Call this tool ONCE for each inline comment you want to add
+   - Call ONCE for each inline comment
+   - Call these SEQUENTIALLY, not in parallel
    - Parameters:
-     * path: file path (e.g., "backend/helloworld.ts")
-     * line: the line number in the NEW version of the file
+     * path: file path from subagent findings
+     * line: line number from subagent findings
      * side: "RIGHT" (for new code)
-     * body: your comment with severity (e.g., "**High Priority**: Add JSDoc comment")
-   - Make these calls SEQUENTIALLY, not in parallel
+     * body: Format as "**[Severity] [Category]**: [Issue]\n\n[Explanation]\n\n**Suggestion**: [Fix]"
+   - Prioritize: Critical > High > Medium > Low
+   - Limit to most important issues (max 15-20 comments)
 
 c) Submit the review:
    - Tool: pull_request_review_write
    - method: "submit_pending"
-   - event: "COMMENT" (or "REQUEST_CHANGES" if critical)
-   - body: Final summary
+   - event: "COMMENT" (or "REQUEST_CHANGES" if critical security/bug issues found)
+   - body: Brief summary of inline comments
 
-Focus on:
-- Code quality and best practices
-- Potential bugs or issues
-- Security concerns
-- Performance considerations
+If the PR looks good with no significant issues, just post the summary comment (Step 3) without inline review.
 
-If code looks good, just post the summary comment (Step 1) without inline review."""
+Remember: Subagents return JSON with findings. Parse and synthesize their outputs."""
     elif auto_triage:
         # Specific prompt for automatic issue triage
         prompt = f"""You are triaging issue #{issue_number} in {repo}.

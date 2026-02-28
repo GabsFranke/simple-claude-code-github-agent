@@ -109,10 +109,21 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Code CL
 - Posts comments and reviews
 - Executes bash commands
 - Iterates on feedback
+- Delegates tasks to specialized subagents
 
 **Configuration:**
 - `~/.claude/settings.json` - Permissions and model settings
 - `~/.claude/mcp.json` - MCP server configurations
+- `~/.claude/subagents/` - Subagent definitions
+
+**Available Subagents:**
+- `architecture-reviewer` - Reviews design patterns and system architecture (PR reviews)
+- `security-reviewer` - Scans for security vulnerabilities (PR reviews)
+- `bug-hunter` - Identifies potential bugs and edge cases (PR reviews)
+- `code-quality-reviewer` - Reviews code style and maintainability (PR reviews)
+- `context-gatherer` - Explores codebase to identify relevant files
+- `bug-investigator` - Investigates bugs and traces root causes
+- `test-writer` - Writes comprehensive test cases
 
 ### 5. GitHub MCP Server
 
@@ -249,3 +260,80 @@ Standard Docker Compose logging available for all services. See README for log c
 - [ ] Custom review rules per repository (beyond CLAUDE.md)
 - [ ] Integration with CI/CD pipelines
 - [ ] Rate limiting and cost controls
+- [ ] Additional specialized subagents
+
+## Subagents
+
+The system includes specialized subagents that the main Claude Code agent can delegate tasks to:
+
+### Available Subagents
+
+**PR Review Subagents (Automatic)**
+
+**architecture-reviewer**
+- Evaluates design patterns and SOLID principles
+- Checks coupling and separation of concerns
+- Reviews API design and module boundaries
+- Use when: Reviewing architectural decisions
+
+**security-reviewer**
+- Scans for SQL injection, XSS, CSRF vulnerabilities
+- Checks authentication and authorization
+- Identifies sensitive data exposure
+- Use when: Security-critical code changes
+
+**bug-hunter**
+- Finds null/undefined handling issues
+- Identifies race conditions and edge cases
+- Reviews error handling
+- Use when: Complex logic or critical paths
+
+**code-quality-reviewer**
+- Reviews code style and readability
+- Checks documentation and naming
+- Identifies code duplication
+- Use when: Ensuring maintainability
+
+**General Purpose Subagents**
+
+**context-gatherer**
+- Explores repository structure efficiently
+- Identifies relevant files for a given task
+- Read-only permissions for safe exploration
+- Use when: Starting work on unfamiliar code or investigating issues
+
+**bug-investigator**
+- Traces bugs to root causes
+- Analyzes execution paths and error conditions
+- Suggests specific fixes
+- Use when: Investigating reported bugs or unexpected behavior
+
+**test-writer**
+- Creates comprehensive test cases
+- Covers edge cases and error conditions
+- Matches existing test framework style
+- Use when: Adding test coverage or testing new features
+
+### Using Subagents
+
+For PR reviews, the main agent automatically coordinates multiple subagents:
+
+```
+Main Agent (Coordinator)
+    ↓ spawns in parallel
+    ├─ architecture-reviewer
+    ├─ security-reviewer
+    ├─ bug-hunter
+    └─ code-quality-reviewer
+    ↓ collects results
+Main Agent (synthesizes and posts review)
+```
+
+For manual commands, invoke subagents explicitly:
+
+```bash
+/agent use security-reviewer to check for vulnerabilities
+claude subagent architecture-reviewer "Review the new service design"
+```
+
+Subagents run in isolated contexts with their own permissions and return results to the parent agent.

@@ -22,6 +22,10 @@ COPY services/agent-worker/worker.py ./services/agent-worker/
 COPY hooks/langfuse_hook.py /app/hooks/langfuse_hook.py
 RUN chmod +x /app/hooks/langfuse_hook.py
 
+# Copy subagents to Claude Code's subagents directory
+RUN mkdir -p /root/.claude/subagents
+COPY subagents/ /root/.claude/subagents/
+
 WORKDIR /app/services/agent-worker
 
 CMD ["python3", "worker.py"]
