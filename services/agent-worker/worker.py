@@ -63,16 +63,14 @@ def get_github_app_token():
     installation_id = os.getenv('GITHUB_INSTALLATION_ID')
     
     if not all([app_id, private_key, installation_id]):
-        logger.info("GitHub App credentials not found, falling back to PAT")
-        return os.getenv('GITHUB_PAT')
+        raise ValueError("GitHub App credentials required: GITHUB_APP_ID, GITHUB_INSTALLATION_ID, and GITHUB_PRIVATE_KEY must be set")
     
     # Validate private key format
     if not validate_github_private_key(private_key):
         logger.error("GITHUB_PRIVATE_KEY is not in valid PEM format")
         logger.error("Expected format: -----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----")
         logger.error("Make sure the key includes header, footer, and is properly formatted")
-        logger.info("Falling back to PAT")
-        return os.getenv('GITHUB_PAT')
+        raise ValueError("Invalid GITHUB_PRIVATE_KEY format")
     
     try:
         # Generate JWT
@@ -99,8 +97,7 @@ def get_github_app_token():
         
         if response.status_code != 201:
             logger.error(f"Failed to get installation token: {response.status_code} {response.text}")
-            logger.info("Falling back to PAT")
-            return os.getenv('GITHUB_PAT')
+            raise RuntimeError(f"Failed to get GitHub App installation token: {response.status_code}")
         
         token = response.json()['token']
         
@@ -113,8 +110,7 @@ def get_github_app_token():
         
     except Exception as e:
         logger.error(f"Error generating GitHub App token: {e}")
-        logger.info("Falling back to PAT")
-        return os.getenv('GITHUB_PAT')
+        raise
 
 
 def setup_claude_code_settings():
@@ -282,8 +278,6 @@ def login_claude_code():
 def setup_github_mcp():
     """Configure Claude Code to use GitHub's official MCP server (one-time setup)"""
     github_token = get_github_app_token()
-    if not github_token:
-        raise ValueError("No GitHub authentication available (neither App nor PAT)")
     
     try:
         # Remove existing config if present
@@ -528,8 +522,6 @@ def get_claude_md(repo: str) -> str:
         import requests
         
         github_token = get_github_app_token()
-        if not github_token:
-            return ""
         
         # Try to fetch CLAUDE.md from repo
         url = f"https://api.github.com/repos/{repo}/contents/CLAUDE.md"
