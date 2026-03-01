@@ -2,13 +2,15 @@
 import os
 import sys
 import logging
-import subprocess
 import json
 import time
+import subprocess
 from pathlib import Path
 from langfuse import Langfuse
 import jwt
 import requests
+import anyio
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, AssistantMessage, TextBlock, HookMatcher
 
 # Add parent directory to path for shared imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -136,13 +138,7 @@ def setup_claude_code_settings():
     # Configure permissions to allow MCP tools
     settings['permissions'] = {
         "allow": [
-            "Read",
-            "Write",
-            "Edit",
-            "Bash",
-            "Glob",
-            "Grep",
-            "Task",
+            "Task",  # Required for subagent delegation
             "mcp__github"  # Allow GitHub MCP tools
         ],
         "deny": [],  # Must have deny array
@@ -151,37 +147,6 @@ def setup_claude_code_settings():
     
     # Enable all project MCP servers
     settings['enableAllProjectMcpServers'] = True
-    
-    # Configure Langfuse Stop hook
-    langfuse_public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
-    langfuse_secret_key = os.getenv('LANGFUSE_SECRET_KEY')
-    
-    if langfuse_public_key and langfuse_secret_key:
-        settings['hooks'] = {
-            "Stop": [
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": "python3 /app/hooks/langfuse_hook.py",
-                            "timeout": 30
-                        }
-                    ]
-                }
-            ],
-            "SubagentStop": [
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": "python3 /app/hooks/langfuse_hook.py",
-                            "timeout": 30
-                        }
-                    ]
-                }
-            ]
-        }
-        logger.info("Configured Langfuse Stop and SubagentStop hooks for Claude Code")
     
     # Check if we have custom env vars to apply
     custom_env = {}
@@ -198,7 +163,10 @@ def setup_claude_code_settings():
     if os.getenv('ANTHROPIC_DEFAULT_OPUS_MODEL'):
         custom_env['ANTHROPIC_DEFAULT_OPUS_MODEL'] = os.getenv('ANTHROPIC_DEFAULT_OPUS_MODEL')
     
-    # Add Langfuse env vars for the hook
+    # Add Langfuse env vars for the hook script
+    langfuse_public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
+    langfuse_secret_key = os.getenv('LANGFUSE_SECRET_KEY')
+    
     if langfuse_public_key and langfuse_secret_key:
         custom_env['TRACE_TO_LANGFUSE'] = 'true'
         custom_env['LANGFUSE_PUBLIC_KEY'] = langfuse_public_key
@@ -206,6 +174,7 @@ def setup_claude_code_settings():
         custom_env['LANGFUSE_HOST'] = os.getenv('LANGFUSE_HOST', 'http://langfuse:3000')
         custom_env['LANGFUSE_BASE_URL'] = os.getenv('LANGFUSE_HOST', 'http://langfuse:3000')
         custom_env['CC_LANGFUSE_DEBUG'] = 'true'  # Enable debug logging
+        logger.info("Configured Langfuse environment variables for hook script")
     
     # Update env section if we have custom vars
     if custom_env:
@@ -224,67 +193,14 @@ def setup_claude_code_settings():
 
 
 def login_claude_code():
-    """Login to Claude Code using API key"""
+    """Setup authentication for Claude Agent SDK"""
     anthropic_key = os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_AUTH_TOKEN')
     if not anthropic_key:
         raise ValueError("ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN environment variable not set")
     
-    try:
-        # Check if already logged in
-        result = subprocess.run(
-            ['claude', '--version'],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env={
-                **os.environ,
-                'ANTHROPIC_API_KEY': anthropic_key,
-                'ANTHROPIC_AUTH_TOKEN': anthropic_key
-            }
-        )
-        
-        # Try a simple command to check auth
-        result = subprocess.run(
-            ['claude', 'mcp', 'list'],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env={
-                **os.environ,
-                'ANTHROPIC_API_KEY': anthropic_key,
-                'ANTHROPIC_AUTH_TOKEN': anthropic_key
-            }
-        )
-        
-        if 'Not logged in' in result.stdout or 'Not logged in' in result.stderr:
-            logger.info("Claude Code not logged in, attempting login...")
-            # Run login command
-            login_result = subprocess.run(
-                ['claude', 'login', '--api-key', anthropic_key],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                env={
-                    **os.environ,
-                    'ANTHROPIC_API_KEY': anthropic_key,
-                    'ANTHROPIC_AUTH_TOKEN': anthropic_key
-                }
-            )
-            
-            if login_result.returncode != 0:
-                logger.error(f"Login failed: {login_result.stdout} {login_result.stderr}")
-                raise RuntimeError(f"Claude Code login failed: {login_result.stderr or login_result.stdout}")
-            
-            logger.info("Claude Code login successful")
-        else:
-            logger.info("Claude Code already authenticated")
-        
-    except subprocess.TimeoutExpired:
-        logger.error("Timeout while checking Claude Code login")
-        raise
-    except Exception as e:
-        logger.error(f"Error checking Claude Code login: {e}")
-        raise
+    # Set environment variable for SDK to use
+    os.environ['ANTHROPIC_API_KEY'] = anthropic_key
+    logger.info("Claude Agent SDK authentication configured")
 
 
 def setup_github_mcp():
@@ -303,12 +219,11 @@ def setup_github_mcp():
         mcp_config = {
             "mcpServers": {
                 "github": {
-                    "transport": "http",
+                    "type": "http",
                     "url": "https://api.githubcopilot.com/mcp",
                     "headers": {
                         "Authorization": f"Bearer {github_token}"
-                    },
-                    "autoApprove": ["*"]
+                    }
                 }
             }
         }
@@ -324,8 +239,8 @@ def setup_github_mcp():
         raise
 
 
-def run_claude_code(repo: str, issue_number: int, command: str, auto_review: bool = False, auto_triage: bool = False) -> str:
-    """Run Claude Code CLI to process the GitHub issue"""
+async def run_claude_code(repo: str, issue_number: int, command: str, auto_review: bool = False, auto_triage: bool = False) -> str:
+    """Run Claude Agent SDK to process the GitHub issue"""
     
     if auto_review:
         # Flexible prompt that lets Claude decide which agents to use
@@ -383,9 +298,15 @@ Help the user with their request. You can:
 
 Always respond by commenting on the issue with your findings or actions taken."""
     
-    logger.info(f"Running Claude Code for {repo} issue #{issue_number} (auto_review={auto_review}, auto_triage={auto_triage})")
+    logger.info(f"Running Claude Agent SDK for {repo} issue #{issue_number} (auto_review={auto_review}, auto_triage={auto_triage})")
     
-    # Create Langfuse generation span for Claude CLI execution
+    # Check if repo has CLAUDE.md and include it
+    claude_md_content = get_claude_md(repo)
+    if claude_md_content:
+        logger.info(f"Found CLAUDE.md in {repo}, including in context")
+        prompt = f"{claude_md_content}\n\n---\n\n{prompt}"
+    
+    # Create Langfuse generation span for Claude SDK execution
     if langfuse:
         # Determine model name from env vars or use default
         model_name = (
@@ -395,10 +316,10 @@ Always respond by commenting on the issue with your findings or actions taken.""
         )
         
         with langfuse.start_as_current_observation(
-            name="claude_cli_execution",
+            name="claude_sdk_execution",
             as_type="generation",
             model=model_name,
-            model_parameters={"command": "claude -p"}
+            model_parameters={"sdk_version": "agent-sdk"}
         ) as generation:
             generation.update(
                 input=prompt,
@@ -414,18 +335,18 @@ Always respond by commenting on the issue with your findings or actions taken.""
             )
             
             try:
-                response = _execute_claude_cli(prompt, repo)
+                response = await _execute_claude_sdk(prompt, repo)
                 
                 generation.update(
                     output=response,
                     level="DEFAULT"
                 )
                 
-                logger.info("Claude Code completed successfully")
+                logger.info("Claude Agent SDK completed successfully")
                 return response
                 
             except Exception as e:
-                logger.error(f"Error running Claude Code: {e}", exc_info=True)
+                logger.error(f"Error running Claude Agent SDK: {e}", exc_info=True)
                 generation.update(
                     level="ERROR",
                     status_message=str(e)
@@ -433,56 +354,119 @@ Always respond by commenting on the issue with your findings or actions taken.""
                 raise
     else:
         # No Langfuse, just execute
-        return _execute_claude_cli(prompt, repo)
+        return await _execute_claude_sdk(prompt, repo)
 
 
-def _execute_claude_cli(prompt: str, repo: str) -> str:
-    """Execute Claude CLI command"""
-    env = {
-        **os.environ,
-        'GITHUB_PAT': get_github_app_token(),  # Use GitHub App token
-    }
+async def _execute_claude_sdk(prompt: str, repo: str) -> str:
+    """Execute Claude Agent SDK"""
     
-    # Add Anthropic API key (try both env var names)
+    # Ensure ANTHROPIC_API_KEY is set before initializing SDK
     anthropic_key = os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_AUTH_TOKEN')
     if anthropic_key:
-        env['ANTHROPIC_API_KEY'] = anthropic_key
-        env['ANTHROPIC_AUTH_TOKEN'] = anthropic_key
+        os.environ['ANTHROPIC_API_KEY'] = anthropic_key
     
     # Add optional Anthropic overrides
     if os.getenv('ANTHROPIC_BASE_URL'):
-        env['ANTHROPIC_BASE_URL'] = os.getenv('ANTHROPIC_BASE_URL')
+        os.environ['ANTHROPIC_BASE_URL'] = os.getenv('ANTHROPIC_BASE_URL')
     
-    # Check if repo has CLAUDE.md and include it
-    claude_md_content = get_claude_md(repo)
-    if claude_md_content:
-        logger.info(f"Found CLAUDE.md in {repo}, including in context")
-        prompt = f"{claude_md_content}\n\n---\n\n{prompt}"
+    github_token = get_github_app_token()
     
-    logger.info("Executing Claude CLI command (this may take several minutes for large PRs)...")
+    # Setup MCP server configuration (HTTP transport)
+    mcp_servers = {
+        "github": {
+            "type": "http",  # Explicitly specify HTTP transport
+            "url": "https://api.githubcopilot.com/mcp",
+            "headers": {
+                "Authorization": f"Bearer {github_token}"
+            }
+        }
+    }
     
-    result = subprocess.run(
-        ['claude', '-p', prompt],
-        capture_output=True,
-        text=True,
-        timeout=600,  # 10 minute timeout
-        env=env
+    # Setup Langfuse hooks if configured
+    hooks = {}
+    langfuse_public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
+    langfuse_secret_key = os.getenv('LANGFUSE_SECRET_KEY')
+    
+    if langfuse_public_key and langfuse_secret_key:
+        # Create hook function that calls the Langfuse hook script
+        async def langfuse_stop_hook(input_data, tool_use_id, context):
+            """Hook that runs after agent stops to send data to Langfuse"""
+            try:
+                # The hook script reads from stdin and processes the transcript
+                hook_payload = json.dumps(input_data)
+                
+                result = subprocess.run(
+                    ['python3', '/app/hooks/langfuse_hook.py'],
+                    input=hook_payload,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env={
+                        **os.environ,
+                        'TRACE_TO_LANGFUSE': 'true',
+                        'LANGFUSE_PUBLIC_KEY': langfuse_public_key,
+                        'LANGFUSE_SECRET_KEY': langfuse_secret_key,
+                        'LANGFUSE_HOST': os.getenv('LANGFUSE_HOST', 'http://langfuse:3000'),
+                        'LANGFUSE_BASE_URL': os.getenv('LANGFUSE_HOST', 'http://langfuse:3000'),
+                        'CC_LANGFUSE_DEBUG': 'true'
+                    }
+                )
+                
+                if result.returncode != 0:
+                    logger.warning(f"Langfuse hook failed: {result.stderr}")
+                else:
+                    logger.debug("Langfuse hook completed successfully")
+                    
+            except Exception as e:
+                logger.warning(f"Error running Langfuse hook: {e}")
+            
+            return {}  # Return empty dict to continue execution
+        
+        # Configure hooks for Stop and SubagentStop events
+        hooks = {
+            "Stop": [
+                HookMatcher(matcher="*", hooks=[langfuse_stop_hook])
+            ],
+            "SubagentStop": [
+                HookMatcher(matcher="*", hooks=[langfuse_stop_hook])
+            ]
+        }
+        logger.info("Configured Langfuse Stop and SubagentStop hooks for Claude Agent SDK")
+    
+    # Configure agent options with MCP servers
+    options = ClaudeAgentOptions(
+        allowed_tools=["Task", "mcp__github__*"],  # Task for subagents, all GitHub MCP tools
+        permission_mode="acceptEdits",  # Auto-accept file edits
+        mcp_servers=mcp_servers,
+        hooks=hooks,
+        max_turns=50  # Allow multiple turns for complex tasks
     )
     
-    if result.returncode != 0:
-        error_msg = f"Claude Code execution failed: {result.stderr or result.stdout}"
-        logger.error(f"Claude Code failed with return code {result.returncode}")
-        logger.error(f"stdout: {result.stdout[:500]}")
-        logger.error(f"stderr: {result.stderr[:500]}")
-        
-        # Check for specific MCP tool errors
-        if 'mcp__github' in result.stderr or 'mcp__github' in result.stdout:
-            logger.error("GitHub MCP tool error detected - check token permissions and review workflow")
-        
-        raise RuntimeError(error_msg)
+    logger.info("Executing Claude Agent SDK (this may take several minutes for large PRs)...")
     
-    logger.info("Claude Code completed successfully")
-    return result.stdout
+    # Collect response
+    response_parts = []
+    
+    try:
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(prompt)
+            
+            async for message in client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            response_parts.append(block.text)
+                            logger.debug(f"Received text: {block.text[:100]}...")
+        
+        response = "\n".join(response_parts)
+        logger.info("Claude Agent SDK completed successfully")
+        return response
+        
+    except Exception as e:
+        error_msg = f"Claude Agent SDK execution failed: {str(e)}"
+        logger.error(error_msg)
+        logger.error(f"Error details: {e}", exc_info=True)
+        raise RuntimeError(error_msg)
 
 
 def get_claude_md(repo: str) -> str:
@@ -511,7 +495,7 @@ def get_claude_md(repo: str) -> str:
         return ""
 
 
-def process_request(repo: str, issue_number: int, command: str, auto_review: bool = False, auto_triage: bool = False):
+async def process_request(repo: str, issue_number: int, command: str, auto_review: bool = False, auto_triage: bool = False):
     """Process a single agent request"""
     logger.info(f"Processing request for {repo} issue #{issue_number}")
     logger.info(f"Command: {command}")
@@ -534,10 +518,10 @@ def process_request(repo: str, issue_number: int, command: str, auto_review: boo
             )
             
             try:
-                # Run Claude Code
-                response = run_claude_code(repo, issue_number, command, auto_review, auto_triage)
+                # Run Claude Agent SDK
+                response = await run_claude_code(repo, issue_number, command, auto_review, auto_triage)
                 
-                logger.info(f"Claude Code response: {response[:200]}..." if len(response) > 200 else f"Claude Code response: {response}")
+                logger.info(f"Claude Agent SDK response: {response[:200]}..." if len(response) > 200 else f"Claude Agent SDK response: {response}")
                 logger.info("Request processed successfully")
                 
                 # Update trace with success
@@ -568,8 +552,8 @@ def process_request(repo: str, issue_number: int, command: str, auto_review: boo
     else:
         # No Langfuse, just run the request
         try:
-            response = run_claude_code(repo, issue_number, command, auto_review, auto_triage)
-            logger.info(f"Claude Code response: {response[:200]}...")
+            response = await run_claude_code(repo, issue_number, command, auto_review, auto_triage)
+            logger.info(f"Claude Agent SDK response: {response[:200]}...")
             logger.info("Request processed successfully")
             return response
         except Exception as e:
@@ -579,13 +563,13 @@ def process_request(repo: str, issue_number: int, command: str, auto_review: boo
 
 def main():
     """Main worker loop - subscribes to queue and processes messages"""
-    logger.info("Starting Claude Code worker (queue mode)")
+    logger.info("Starting Claude Agent SDK worker (queue mode)")
     
-    # Login to Claude Code
+    # Setup authentication
     try:
         login_claude_code()
     except Exception as e:
-        logger.error(f"Failed to login to Claude Code: {e}")
+        logger.error(f"Failed to setup Claude Agent SDK authentication: {e}")
         raise
     
     # Setup Claude Code settings from environment variables
@@ -618,7 +602,7 @@ def main():
                 logger.error(f"Invalid message format: {message}")
                 return
             
-            process_request(repo, issue_number, command, auto_review, auto_triage)
+            await process_request(repo, issue_number, command, auto_review, auto_triage)
             
         except Exception as e:
             logger.error(f"Error in callback: {e}", exc_info=True)

@@ -1,24 +1,25 @@
-FROM node:18-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Python
+# Install Node.js (required by bundled Claude Code CLI)
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
+    curl \
+    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
 
 # Copy shared module
 COPY shared/ ./shared/
 
-# Copy agent-worker
-COPY services/agent-worker/requirements.txt ./services/agent-worker/
-RUN pip3 install --no-cache-dir -r services/agent-worker/requirements.txt --break-system-packages
+# Copy agent-worker requirements and install
+COPY services/agent-worker/requirements.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt
 
+# Copy agent-worker code
 COPY services/agent-worker/worker.py ./services/agent-worker/
+
+# Copy hooks
 COPY hooks/langfuse_hook.py /app/hooks/langfuse_hook.py
 RUN chmod +x /app/hooks/langfuse_hook.py
 

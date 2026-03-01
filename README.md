@@ -1,6 +1,6 @@
 # Simple Claude Code GitHub Agent
 
-AI-powered GitHub agent that automatically reviews pull requests and responds to commands using Claude Code CLI and GitHub's official MCP server.
+AI-powered GitHub agent that automatically reviews pull requests and responds to commands using Claude Agent SDK and GitHub's official MCP server.
 
 > [!WARNING]
 > This agent has full write access to your repositories and can autonomously create branches, commit changes, and open PRs. The current implementation auto-approves all GitHub MCP tool calls (configured with `autoApprove: ['*']`) to allow Claude Code to operate without manual confirmation. Fine-grained permission controls are not yet implemented. Use with caution and test in a sandbox repository first.
@@ -22,7 +22,7 @@ AI-powered GitHub agent that automatically reviews pull requests and responds to
 
 ### Prerequisites
 
-- Docker & Docker Compose (recommended) OR Node.js 18+ & Python 3.11+
+- Docker & Docker Compose (recommended) OR Python 3.11+
 - GitHub App with appropriate permissions ([create one](https://github.com/settings/apps/new))
 - Anthropic API Key ([get from console](https://console.anthropic.com/))
 - ngrok (for local webhook testing)
@@ -193,7 +193,7 @@ docker-compose exec worker cat /root/.claude/state/langfuse_hook.log
 ```
 
 ```
-GitHub Event → Webhook → Redis Queue → Worker → Claude Code CLI
+GitHub Event → Webhook → Redis Queue → Worker → Claude Agent SDK
                                                       ↓
                                               GitHub MCP Server
                                                    (Official)
@@ -203,9 +203,9 @@ GitHub Event → Webhook → Redis Queue → Worker → Claude Code CLI
 
 **Components:**
 - **Webhook Service** - Receives GitHub events (FastAPI)
-- **Worker** - Spawns Claude Code CLI instances to process requests
+- **Worker** - Uses Claude Agent SDK to process requests programmatically
 - **Message Queue** - Redis for job distribution
-- **Claude Code CLI** - Autonomous coding agent with GitHub MCP access
+- **Claude Agent SDK** - Python SDK for autonomous coding agent with GitHub MCP access
 - **Langfuse** - Optional self-hosted observability platform for tracing and debugging
 
 ## Configuration

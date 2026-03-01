@@ -2,7 +2,7 @@
 
 ## Overview
 
-Simple Claude Code GitHub Agent is a lightweight system that uses Claude Code CLI with GitHub's official MCP server to provide automated code reviews and respond to developer commands.
+Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent SDK with GitHub's official MCP server to provide automated code reviews and respond to developer commands.
 
 ## System Architecture
 
@@ -27,14 +27,14 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Code CL
          ▼
 ┌─────────────────┐
 │  Worker Service │
-│  Spawns Claude  │
-│   Code CLI      │
+│  Uses Claude    │
+│   Agent SDK     │
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  Claude Code    │
-│      CLI        │
+│  Claude Agent   │
+│      SDK        │
 └────────┬────────┘
          │
          ▼
@@ -84,22 +84,22 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Code CL
 
 ### 3. Worker Service
 
-**Technology:** Python + Claude Code CLI (Node.js)  
+**Technology:** Python + Claude Agent SDK  
 **Purpose:** Processes agent requests
 
 **Responsibilities:**
 - Subscribes to message queue
-- Configures Claude Code settings from environment
+- Configures Claude Agent SDK from environment
 - Fetches CLAUDE.md from repositories (if present)
-- Spawns Claude Code CLI with appropriate prompts
+- Uses Claude Agent SDK programmatically with appropriate prompts
 - Handles both manual commands and automatic reviews
 
 **Key Files:**
 - `services/agent-worker/worker.py`
 
-### 4. Claude Code CLI
+### 4. Claude Agent SDK
 
-**Technology:** Node.js CLI tool by Anthropic  
+**Technology:** Python SDK by Anthropic  
 **Purpose:** Autonomous coding agent
 
 **Capabilities:**
@@ -115,6 +115,7 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Code CL
 - `~/.claude/settings.json` - Permissions and model settings
 - `~/.claude/mcp.json` - MCP server configurations
 - `~/.claude/subagents/` - Subagent definitions
+- Programmatic configuration via `ClaudeAgentOptions`
 
 **Available Subagents:**
 - `architecture-reviewer` - Reviews design patterns and system architecture (PR reviews)
@@ -149,9 +150,9 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Code CL
 3. Webhook service receives event
 4. Webhook publishes to queue: `{repo, pr_number, command: "Review this PR", auto_review: true}`
 5. Worker picks up message
-6. Worker spawns Claude Code with review prompt
-7. Claude Code uses GitHub MCP to read PR diff
-8. Claude Code posts review comments
+6. Worker uses Claude Agent SDK with review prompt
+7. Claude Agent SDK uses GitHub MCP to read PR diff
+8. Claude Agent SDK posts review comments
 9. Developer sees review on GitHub
 
 ### Manual Command
@@ -162,9 +163,9 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Code CL
 4. Webhook publishes to queue: `{repo, issue_number, command: "explain this function"}`
 5. Worker picks up message
 6. Worker checks for CLAUDE.md in repo
-7. Worker spawns Claude Code with command
-8. Claude Code uses GitHub MCP to read code
-9. Claude Code posts explanation as comment
+7. Worker uses Claude Agent SDK with command
+8. Claude Agent SDK uses GitHub MCP to read code
+9. Claude Agent SDK posts explanation as comment
 10. Developer sees response on GitHub
 
 ## Deployment
@@ -190,16 +191,15 @@ See [README.md](README.md) for setup instructions.
 ### Permissions
 
 > [!WARNING]
-> Claude Code is configured with broad permissions to enable autonomous operation.
+> Claude Agent SDK is configured with broad permissions to enable autonomous operation.
 
-Claude Code permissions configured in `~/.claude/settings.json`:
-- **Allow:** Read, Write, Edit, Bash, MCP tools (including `mcp__github`)
-- **Deny:** Empty
-- **Ask:** Empty (auto-approve all allowed tools)
+Claude Agent SDK permissions configured via `ClaudeAgentOptions`:
+- **allowed_tools:** Read, Write, Edit, Bash, MCP tools (including `mcp__github`)
+- **permission_mode:** `acceptEdits` (auto-approve file edits)
 
-GitHub MCP server configured in `~/.claude/mcp.json`:
-- **autoApprove:** `['*']` (all GitHub MCP tools auto-approved)
-- **sequentialReviewComments:** `true` (prevents parallel review comment issues)
+GitHub MCP server configured programmatically:
+- All GitHub MCP tools available
+- Sequential review comments to prevent parallel issues
 
 **Security Implications:**
 - Agent can create branches, commit code, and open PRs without confirmation
@@ -228,13 +228,13 @@ GitHub MCP server configured in `~/.claude/mcp.json`:
 
 - Webhook responds immediately (< 100ms)
 - Worker processes in background (1-10 minutes)
-- Claude Code timeout: 10 minutes per request
+- Claude Agent SDK timeout: Configurable per request
 
 ### Limits
 
 - GitHub API rate limits: 5000 requests/hour (with GitHub App or PAT)
 - Anthropic API rate limits: Varies by plan and model
-- Claude Code: One request at a time per worker instance
+- Claude Agent SDK: One request at a time per worker instance
 - Worker scaling: Use `docker-compose up --scale worker=N` for parallel processing
 
 ## Monitoring & Observability
@@ -243,7 +243,7 @@ GitHub MCP server configured in `~/.claude/mcp.json`:
 
 When using the full Docker Compose setup, Langfuse provides complete observability:
 - **Traces:** End-to-end execution flow
-- **Generations:** Claude Code CLI invocations
+- **Generations:** Claude Agent SDK invocations
 - **Tool Calls:** GitHub MCP tool usage
 - **Debugging:** Error tracking and performance analysis
 
