@@ -33,8 +33,17 @@ When a pull request is opened, the system performs a comprehensive multi-agent r
 └────────────────────────┬────────────────────────────────────┘
                          │
                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│          Read PR and Analyze Changes (Step 1)                │
+│          - Get PR diff and details                           │
+│          - Assess scope and type of changes                  │
+│          - Decide which agents are needed                    │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
          ┌───────────────┴───────────────┐
-         │  Spawn 4 Subagents in Parallel │
+         │  Spawn Selected Subagents     │
+         │  (0-4 agents based on need)   │
          └───────────────┬───────────────┘
                          │
          ┌───────────────┼───────────────┬───────────────┐
@@ -43,6 +52,7 @@ When a pull request is opened, the system performs a comprehensive multi-agent r
 ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
 │Architecture │ │  Security   │ │ Bug Hunter  │ │Code Quality │
 │  Reviewer   │ │  Reviewer   │ │             │ │  Reviewer   │
+│  (if needed)│ │ (if needed) │ │ (if needed) │ │ (if needed) │
 └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
        │               │               │               │
        │ Design        │ Vulnerabilities│ Bugs & Edge  │ Style &
@@ -196,12 +206,13 @@ Each subagent returns structured JSON:
 
 ## Benefits
 
-1. **Comprehensive Coverage**: Four specialized perspectives ensure nothing is missed
-2. **Parallel Execution**: Subagents run simultaneously for faster reviews
-3. **Focused Expertise**: Each subagent is optimized for its domain
+1. **Intelligent Delegation**: Only uses agents that are relevant to the changes
+2. **Efficient Reviews**: Small PRs get quick reviews, complex PRs get thorough analysis
+3. **Focused Expertise**: Each subagent specializes in their domain
 4. **Structured Output**: JSON format enables easy parsing and prioritization
-5. **Consistent Quality**: Same thorough review every time
+5. **Consistent Quality**: Same thorough review process for similar changes
 6. **Actionable Feedback**: Specific suggestions with code examples
+7. **Cost Effective**: Doesn't waste tokens on unnecessary reviews
 
 ## Customization
 

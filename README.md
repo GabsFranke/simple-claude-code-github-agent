@@ -147,9 +147,9 @@ When working on this project:
 
 ### Subagents
 
-The agent uses specialized subagents for comprehensive PR reviews:
+The agent uses specialized subagents for intelligent PR reviews:
 
-**PR Review Subagents (run automatically):**
+**PR Review Subagents (used selectively based on changes):**
 - **architecture-reviewer**: Evaluates design patterns, SOLID principles, and system architecture
 - **security-reviewer**: Scans for vulnerabilities (SQL injection, XSS, auth issues, etc.)
 - **bug-hunter**: Identifies potential bugs, edge cases, and error handling issues
@@ -160,7 +160,14 @@ The agent uses specialized subagents for comprehensive PR reviews:
 - **bug-investigator**: Traces bugs to root causes
 - **test-writer**: Creates comprehensive test cases
 
-The main agent coordinates these subagents, synthesizes their findings, and posts a unified review.
+The main agent intelligently decides which subagents to use based on the PR:
+- Documentation changes → `code-quality-reviewer` only
+- Bug fixes → `bug-hunter` + `code-quality-reviewer`
+- New features → Multiple agents as needed
+- Security-critical changes → All agents including `security-reviewer`
+- Typo fixes → May skip agents entirely
+
+The coordinator explains which agents were used and why in the review summary.
 
 You can also request specific subagents manually:
 
@@ -179,6 +186,11 @@ For information about subagents, see [SUBAGENTS.md](docs/SUBAGENTS.md).
 For PR review flow details, see [docs/PR_REVIEW_FLOW.md](docs/PR_REVIEW_FLOW.md).
 
 For debugging subagents, see [docs/DEBUGGING_SUBAGENTS.md](docs/DEBUGGING_SUBAGENTS.md).
+
+**Note**: Langfuse hook logs are only available inside the container (not via `docker-compose logs`). View with:
+```bash
+docker-compose exec worker cat /root/.claude/state/langfuse_hook.log
+```
 
 ```
 GitHub Event → Webhook → Redis Queue → Worker → Claude Code CLI

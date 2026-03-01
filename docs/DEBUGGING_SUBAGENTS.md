@@ -66,9 +66,17 @@ docker-compose exec worker cat /root/.claude/agents/architecture-reviewer.md
 # 3. List agents
 docker-compose exec worker claude agents
 
-# 4. Check logs for subagent invocations
+# 4. Check worker logs
 docker-compose logs -f worker
+
+# 5. Check Langfuse hook logs (inside container only)
+docker-compose exec worker cat /root/.claude/state/langfuse_hook.log
+
+# 6. View last 50 lines of hook logs
+docker-compose exec worker tail -n 50 /root/.claude/state/langfuse_hook.log
 ```
+
+**Note**: Hook logs are only available inside the container at `/root/.claude/state/langfuse_hook.log`. They are NOT captured by `docker-compose logs`.
 
 ### Subagents fail with permission errors
 
@@ -191,8 +199,15 @@ docker-compose exec worker ls -la /root/.claude/agents/
 # List available agents
 docker-compose exec worker claude agents
 
-# View worker logs
+# View all worker logs
 docker-compose logs -f worker
+
+# View Langfuse hook logs (inside container only)
+docker-compose exec worker cat /root/.claude/state/langfuse_hook.log
+
+# View recent hook logs
+docker-compose exec worker tail -n 50 /root/.claude/state/langfuse_hook.log
+
 
 # Test subagent directly
 docker-compose exec worker claude --agent bug-hunter -p "Find bugs in this code"
@@ -203,6 +218,8 @@ docker-compose exec worker claude --version
 # Verify MCP configuration
 docker-compose exec worker claude mcp list
 ```
+
+**Note**: Hook logs are stored inside the container and are NOT visible via `docker-compose logs`. You must use `docker-compose exec` to view them.
 
 ## Getting Help
 

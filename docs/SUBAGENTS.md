@@ -24,33 +24,50 @@ Subagents are specialized Claude Code instances with:
 
 ## How Subagents Work in PR Reviews
 
-When a PR is opened, the main agent acts as a coordinator:
+When a PR is opened, the main agent acts as an intelligent coordinator:
 
-1. **Delegates** to 4 specialized subagents in parallel:
-   - `architecture-reviewer` - Checks design patterns and system architecture
-   - `security-reviewer` - Scans for security vulnerabilities
-   - `bug-hunter` - Identifies potential bugs and edge cases
-   - `code-quality-reviewer` - Reviews code style and maintainability
+1. **Analyzes the PR** - Reads the diff to understand scope and type of changes
 
-2. **Synthesizes** results from all subagents into a unified view
+2. **Decides which agents to use** based on the changes:
+   - Documentation-only → Maybe just `code-quality-reviewer`
+   - New auth feature → `security-reviewer`, `bug-hunter`, `architecture-reviewer`
+   - Bug fix → `bug-hunter`, `code-quality-reviewer`
+   - Major refactoring → All four agents
+   - Typo fix → Possibly no agents, just approve
 
-3. **Posts** a comprehensive summary comment with findings by category
+3. **Delegates to selected agents** - Each analyzes from their perspective
 
-4. **Adds** inline comments for the most critical issues
+4. **Synthesizes results** - Combines findings and prioritizes by severity
 
-This multi-agent approach provides thorough, specialized reviews covering all aspects of code quality.
+5. **Posts review** - Summary comment + inline comments for critical issues
+
+This intelligent delegation ensures:
+- ✅ Small PRs get quick, focused reviews
+- ✅ Complex PRs get thorough multi-agent analysis
+- ✅ No unnecessary overhead for trivial changes
+- ✅ Critical areas (security, bugs) always get proper scrutiny
 
 ### Automatic Usage
 
-For PR reviews, the main agent automatically delegates to specialized subagents:
-- **architecture-reviewer** evaluates design decisions
-- **security-reviewer** scans for vulnerabilities  
-- **bug-hunter** finds potential bugs
-- **code-quality-reviewer** checks code style
+For PR reviews, the main agent intelligently delegates to specialized subagents based on the changes:
 
-The coordinator synthesizes all findings into a comprehensive review.
+**Small/Simple PRs:**
+- Documentation changes → `code-quality-reviewer` only
+- Typo fixes → May skip agents entirely
+- Config updates → `code-quality-reviewer` if needed
 
-For other tasks, the agent may delegate when appropriate.
+**Medium PRs:**
+- Bug fixes → `bug-hunter` + `code-quality-reviewer`
+- Feature additions → `bug-hunter` + `code-quality-reviewer` + `architecture-reviewer`
+- Refactoring → `architecture-reviewer` + `code-quality-reviewer`
+
+**Complex/Critical PRs:**
+- Authentication/authorization → All agents (especially `security-reviewer`)
+- API changes → `security-reviewer` + `architecture-reviewer` + `bug-hunter`
+- Major refactoring → All four agents
+- Database changes → `security-reviewer` + `bug-hunter` + `architecture-reviewer`
+
+The coordinator explains which agents were used and why in the review summary.
 
 ### Manual Invocation
 

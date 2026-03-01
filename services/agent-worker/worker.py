@@ -205,6 +205,7 @@ def setup_claude_code_settings():
         custom_env['LANGFUSE_SECRET_KEY'] = langfuse_secret_key
         custom_env['LANGFUSE_HOST'] = os.getenv('LANGFUSE_HOST', 'http://langfuse:3000')
         custom_env['LANGFUSE_BASE_URL'] = os.getenv('LANGFUSE_HOST', 'http://langfuse:3000')
+        custom_env['CC_LANGFUSE_DEBUG'] = 'true'  # Enable debug logging
     
     # Update env section if we have custom vars
     if custom_env:
@@ -291,62 +292,33 @@ def setup_github_mcp():
     github_token = get_github_app_token()
     
     try:
-        # Remove existing config if present
-        subprocess.run(
-            ['claude', 'mcp', 'remove', 'github'],
-            capture_output=True,
-            timeout=10
-        )
-        
-        # Add GitHub MCP server using remote HTTP endpoint
-        logger.info("Configuring GitHub MCP server with GitHub App token...")
-        
-        # Use the command-line approach with scope
-        result = subprocess.run(
-            [
-                'claude', 'mcp', 'add', 
-                '--scope', 'local',
-                '--transport', 'http',
-                'github',
-                'https://api.githubcopilot.com/mcp',
-                '-H', f'Authorization: Bearer {github_token}'
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode != 0:
-            logger.error(f"Failed to add MCP server: {result.stderr}")
-            raise RuntimeError(f"MCP configuration failed: {result.stderr}")
-        
-        logger.info("GitHub MCP server configured successfully")
-        
-        # Now manually edit the config to add autoApprove and disable parallel calls
+        # Create MCP config file directly at user level
         import json
         from pathlib import Path
         
-        config_file = Path.home() / '.claude' / 'mcp.json'
-        if config_file.exists():
-            with open(config_file, 'r') as f:
-                config = json.load(f)
-            
-            # Add autoApprove to github server
-            if 'github' in config.get('mcpServers', {}):
-                config['mcpServers']['github']['autoApprove'] = ['*']
-                # Add settings to prevent parallel tool calls for review operations
-                config['mcpServers']['github']['settings'] = {
-                    'sequentialReviewComments': True
-                }
-                
-                with open(config_file, 'w') as f:
-                    json.dump(config, f, indent=2)
-                
-                logger.info("Added auto-approve and sequential review settings to GitHub MCP server config")
+        mcp_config_file = Path.home() / '.claude' / 'mcp.json'
+        mcp_config_file.parent.mkdir(parents=True, exist_ok=True)
         
-    except subprocess.TimeoutExpired:
-        logger.error("Timeout while configuring GitHub MCP server")
-        raise
+        # Create or update MCP configuration
+        mcp_config = {
+            "mcpServers": {
+                "github": {
+                    "transport": "http",
+                    "url": "https://api.githubcopilot.com/mcp",
+                    "headers": {
+                        "Authorization": f"Bearer {github_token}"
+                    },
+                    "autoApprove": ["*"]
+                }
+            }
+        }
+        
+        with open(mcp_config_file, 'w') as f:
+            json.dump(mcp_config, f, indent=2)
+        
+        logger.info(f"Created MCP config at {mcp_config_file}")
+        logger.info("GitHub MCP server configured successfully with auto-approve")
+        
     except Exception as e:
         logger.error(f"Unexpected error configuring MCP: {e}")
         raise
@@ -356,62 +328,35 @@ def run_claude_code(repo: str, issue_number: int, command: str, auto_review: boo
     """Run Claude Code CLI to process the GitHub issue"""
     
     if auto_review:
-        # Prompt that encourages Claude to use specialized subagents
-        prompt = f"""You are coordinating a comprehensive code review for PR #{issue_number} in {repo}.
+        # Flexible prompt that lets Claude decide which agents to use
+        prompt = f"""Review PR #{issue_number} in {repo} using specialized agents as needed.
 
-You have access to specialized review subagents that will help you analyze this PR thoroughly:
-- architecture-reviewer: For design patterns, SOLID principles, and system architecture
-- security-reviewer: For vulnerabilities, auth issues, and data exposure
-- bug-hunter: For potential bugs, edge cases, and error handling
-- code-quality-reviewer: For style, readability, and maintainability
+Available agents:
+- architecture-reviewer: Design patterns, SOLID principles, API design
+- security-reviewer: Vulnerabilities, auth issues, data exposure
+- bug-hunter: Potential bugs, edge cases, error handling
+- code-quality-reviewer: Style, readability, maintainability
 
-Your workflow:
+Workflow:
 
-STEP 1: Delegate to specialized subagents
-Use the specialized subagents to analyze the PR from different perspectives. Each subagent will return JSON with their findings. You should delegate to all four subagents to get comprehensive coverage.
+1. Read the PR (use GitHub MCP tools)
+2. Decide which agents to use based on changes:
+   - Docs only → code-quality or none
+   - Auth/API changes → security, bug-hunter, architecture
+   - Bug fixes → bug-hunter, code-quality
+   - Major refactor → all agents
+3. Delegate to chosen agents: "agent-name, review PR #{issue_number} in {repo}"
+4. Post summary comment (add_issue_comment):
+   - Overall assessment
+   - Which agents used and why
+   - Findings by category with severity counts
+   - Recommendation (approve/request changes)
+5. Add inline comments if issues found:
+   a) Create pending review (pull_request_review_write, method="create", no event param)
+   b) Add comments SEQUENTIALLY (add_comment_to_pending_review, top 15-20 issues)
+   c) Submit review (pull_request_review_write, method="submit_pending", event="COMMENT"/"REQUEST_CHANGES"/"APPROVE")
 
-STEP 2: Synthesize results
-Collect and analyze the JSON outputs from all subagents. Prioritize findings by severity (critical > high > medium > low). Group findings by category.
-
-STEP 3: Post summary comment
-Use add_issue_comment to post a comprehensive "Code Review" summary in the conversation tab:
-- Overall assessment of the PR
-- Key findings organized by category (Security, Bugs, Architecture, Code Quality)
-- Count of issues by severity level
-- Positive notes about good practices
-- This should be a regular issue comment
-
-STEP 4: Add inline review comments (if there are specific issues)
-If the subagents found specific issues, use the THREE-STEP review workflow:
-
-a) Create pending review:
-   - Tool: pull_request_review_write
-   - method: "create"
-   - Do NOT include "event" parameter (keeps it pending)
-   - Do NOT include "comments" array
-   - body: "Detailed review findings from automated analysis"
-
-b) Add inline comments for top priority issues:
-   - Tool: add_comment_to_pending_review
-   - Call ONCE for each inline comment
-   - Call these SEQUENTIALLY, not in parallel
-   - Parameters:
-     * path: file path from subagent findings
-     * line: line number from subagent findings
-     * side: "RIGHT" (for new code)
-     * body: Format as "**[Severity] [Category]**: [Issue]\n\n[Explanation]\n\n**Suggestion**: [Fix]"
-   - Prioritize: Critical > High > Medium > Low
-   - Limit to most important issues (max 15-20 comments)
-
-c) Submit the review:
-   - Tool: pull_request_review_write
-   - method: "submit_pending"
-   - event: "COMMENT" (or "REQUEST_CHANGES" if critical security/bug issues found)
-   - body: Brief summary of inline comments
-
-If the PR looks good with no significant issues, just post the summary comment (Step 3) without inline review.
-
-Start by delegating to the specialized subagents to gather their analysis."""
+Start by reading the PR."""
     elif auto_triage:
         # Specific prompt for automatic issue triage
         prompt = f"""You are triaging issue #{issue_number} in {repo}.
