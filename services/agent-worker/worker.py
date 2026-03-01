@@ -246,7 +246,7 @@ async def run_claude_code(repo: str, issue_number: int, command: str, auto_revie
         # Flexible prompt that lets Claude decide which agents to use
         prompt = f"""Review PR #{issue_number} in {repo} using specialized agents as needed.
 
-Available agents:
+You have access to these specialized subagents via the Task tool:
 - architecture-reviewer: Design patterns, SOLID principles, API design
 - security-reviewer: Vulnerabilities, auth issues, data exposure
 - bug-hunter: Potential bugs, edge cases, error handling
@@ -256,11 +256,11 @@ Workflow:
 
 1. Read the PR (use GitHub MCP tools)
 2. Decide which agents to use based on changes:
-   - Docs only → code-quality or none
-   - Auth/API changes → security, bug-hunter, architecture
-   - Bug fixes → bug-hunter, code-quality
+   - Docs only → code-quality-reviewer or none
+   - Auth/API changes → security-reviewer, bug-hunter, architecture-reviewer
+   - Bug fixes → bug-hunter, code-quality-reviewer
    - Major refactor → all agents
-3. Delegate to chosen agents: "agent-name, review PR #{issue_number} in {repo}"
+3. Delegate to chosen agents using Task tool: "agent-name, review PR #{issue_number} in {repo}"
 4. Post summary comment (add_issue_comment):
    - Overall assessment
    - Which agents used and why
@@ -433,16 +433,18 @@ async def _execute_claude_sdk(prompt: str, repo: str) -> str:
         }
         logger.info("Configured Langfuse Stop and SubagentStop hooks for Claude Agent SDK")
     
-    # Configure agent options with MCP servers
+    # Configure agent options with MCP servers and filesystem agents
     options = ClaudeAgentOptions(
         allowed_tools=["Task", "mcp__github__*"],  # Task for subagents, all GitHub MCP tools
         permission_mode="acceptEdits",  # Auto-accept file edits
         mcp_servers=mcp_servers,
         hooks=hooks,
-        max_turns=50  # Allow multiple turns for complex tasks
+        max_turns=50,  # Allow multiple turns for complex tasks
+        setting_sources=["user"]  # Load agents from ~/.claude/agents/
     )
     
     logger.info("Executing Claude Agent SDK (this may take several minutes for large PRs)...")
+    logger.info(f"Configured to load agents from ~/.claude/agents/")
     
     # Collect response
     response_parts = []
@@ -452,6 +454,14 @@ async def _execute_claude_sdk(prompt: str, repo: str) -> str:
             await client.query(prompt)
             
             async for message in client.receive_response():
+                # Log init message to see loaded agents
+                if hasattr(message, 'type') and message.type == 'system' and hasattr(message, 'subtype') and message.subtype == 'init':
+                    if hasattr(message, 'data') and 'agents' in message.data:
+                        agents = message.data.get('agents', [])
+                        logger.info(f"Loaded {len(agents)} custom agents: {[a.get('name') for a in agents]}")
+                    else:
+                        logger.warning("No custom agents found in init message")
+                
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):
@@ -585,6 +595,18 @@ def main():
     except Exception as e:
         logger.error(f"Failed to setup GitHub MCP: {e}")
         logger.info("Continuing anyway - will retry on first request")
+    
+    # Verify custom agents are available
+    agents_dir = Path.home() / '.claude' / 'agents'
+    if agents_dir.exists():
+        agent_files = list(agents_dir.glob('*.md'))
+        if agent_files:
+            agent_names = [f.stem for f in agent_files]
+            logger.info(f"Found {len(agent_files)} custom agents: {agent_names}")
+        else:
+            logger.warning(f"No agent files found in {agents_dir}")
+    else:
+        logger.warning(f"Agents directory not found: {agents_dir}")
     
     # Initialize queue
     queue = get_queue()
