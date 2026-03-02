@@ -32,11 +32,13 @@ MAX_CHARS = int(os.environ.get("CC_LANGFUSE_MAX_CHARS", "20000"))
 
 # ----------------- Logging -----------------
 def _log(level: str, message: str) -> None:
+    """Log to file only (hook runs after agent stops, so logs appear post-execution)"""
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_line = f"{ts} [{level}] {message}\n"
         with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{ts} [{level}] {message}\n")
+            f.write(log_line)
     except Exception:
         # Never block
         pass
@@ -144,10 +146,13 @@ def read_hook_payload() -> Dict[str, Any]:
 
 def extract_session_and_transcript(
     payload: Dict[str, Any],
-) -> Tuple[Optional[str], Optional[Path]]:
+) -> Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]:
     """
     Tries a few plausible field names; exact keys can vary across hook types/versions.
     Prefer structured values from stdin over heuristics.
+    
+    For SubagentStop events, use agent_transcript_path and agent_id.
+    Returns: (session_id, transcript_path, agent_type, parent_session_id)
     """
     session_id = (
         payload.get("sessionId")
@@ -155,11 +160,28 @@ def extract_session_and_transcript(
         or payload.get("session", {}).get("id")
     )
 
-    transcript = (
-        payload.get("transcriptPath")
-        or payload.get("transcript_path")
-        or payload.get("transcript", {}).get("path")
-    )
+    # For SubagentStop, use agent_transcript_path and create unique session_id
+    hook_event = payload.get("hook_event_name")
+    agent_type = None
+    parent_session_id = None
+    
+    if hook_event == "SubagentStop":
+        transcript = payload.get("agent_transcript_path")
+        agent_id = payload.get("agent_id")
+        agent_type = payload.get("agent_type")
+        
+        # Keep parent session ID for linking
+        parent_session_id = session_id
+        
+        # Create unique session ID for subagent
+        if session_id and agent_id:
+            session_id = f"{session_id}::{agent_id}"
+    else:
+        transcript = (
+            payload.get("transcriptPath")
+            or payload.get("transcript_path")
+            or payload.get("transcript", {}).get("path")
+        )
 
     if transcript:
         try:
@@ -169,7 +191,7 @@ def extract_session_and_transcript(
     else:
         transcript_path = None
 
-    return session_id, transcript_path
+    return session_id, transcript_path, agent_type, parent_session_id
 
 
 # ----------------- Transcript parsing helpers -----------------
@@ -457,6 +479,9 @@ def emit_turn(
     turn_num: int,
     turn: Turn,
     transcript_path: Path,
+    trace_prefix: str = "Claude Code",
+    agent_type: Optional[str] = None,
+    parent_session_id: Optional[str] = None,
 ) -> None:
     user_text_raw = extract_text(get_content(turn.user_msg))
     user_text, user_text_meta = truncate_text(user_text_raw)
@@ -484,25 +509,43 @@ def emit_turn(
         else:
             c["output"] = None
 
+    trace_name = f"{trace_prefix} - Turn {turn_num}"
+    
+    # Build tags - add agent type if this is a subagent
+    tags = ["claude-code"]
+    if agent_type:
+        tags.extend(["subagent", f"agent:{agent_type}"])
+    else:
+        tags.append("main-agent")
+    
+    # Build metadata
+    trace_metadata = {
+        "source": "claude-code",
+        "session_id": session_id,
+        "turn_number": turn_num,
+        "transcript_path": str(transcript_path),
+        "user_text": user_text_meta,
+        "agent_type": agent_type or "main",
+        "is_subagent": agent_type is not None,
+    }
+    
+    # Add parent session ID for subagents
+    if parent_session_id:
+        trace_metadata["parent_session_id"] = parent_session_id
+    
     with propagate_attributes(
         session_id=session_id,
-        trace_name=f"Claude Code - Turn {turn_num}",
-        tags=["claude-code"],
+        trace_name=trace_name,
+        tags=tags,
     ):
         with langfuse.start_as_current_span(
-            name=f"Claude Code - Turn {turn_num}",
+            name=trace_name,
             input={"role": "user", "content": user_text},
-            metadata={
-                "source": "claude-code",
-                "session_id": session_id,
-                "turn_number": turn_num,
-                "transcript_path": str(transcript_path),
-                "user_text": user_text_meta,
-            },
+            metadata=trace_metadata,
         ) as trace_span:
             # LLM generation
             with langfuse.start_as_current_observation(
-                name="Claude Response",
+                name=f"{agent_type or 'Claude'} Response",
                 as_type="generation",
                 model=model,
                 input={"role": "user", "content": user_text},
@@ -510,6 +553,7 @@ def emit_turn(
                 metadata={
                     "assistant_text": assistant_text_meta,
                     "tool_count": len(tool_calls),
+                    "agent_type": agent_type or "main",
                 },
             ):
                 pass
@@ -532,6 +576,7 @@ def emit_turn(
                         "tool_id": tc["id"],
                         "input_meta": in_meta,
                         "output_meta": tc.get("output_meta"),
+                        "agent_type": agent_type or "main",
                     },
                 ) as tool_obs:
                     tool_obs.update(output=tc.get("output"))
@@ -545,6 +590,7 @@ def main() -> int:
     debug("Hook started")
 
     if os.environ.get("TRACE_TO_LANGFUSE", "").lower() != "true":
+        debug("TRACE_TO_LANGFUSE not enabled, exiting")
         return 0
 
     public_key = os.environ.get("CC_LANGFUSE_PUBLIC_KEY") or os.environ.get(
@@ -560,10 +606,20 @@ def main() -> int:
     )
 
     if not public_key or not secret_key:
+        debug("Langfuse credentials not found, exiting")
         return 0
+    
+    debug(f"Langfuse configured: host={host}")
 
     payload = read_hook_payload()
-    session_id, transcript_path = extract_session_and_transcript(payload)
+    session_id, transcript_path, agent_type, parent_session_id = extract_session_and_transcript(payload)
+    
+    # Enhanced debug logging
+    hook_event = payload.get("hook_event_name", "unknown")
+    if agent_type:
+        debug(f"Hook event: {hook_event}, Agent: {agent_type}, Session: {session_id}, Parent: {parent_session_id}")
+    else:
+        debug(f"Hook event: {hook_event}, Session: {session_id}")
 
     if not session_id or not transcript_path:
         # No structured payload; fail open (do not guess)
@@ -573,6 +629,10 @@ def main() -> int:
     if not transcript_path.exists():
         debug(f"Transcript path does not exist: {transcript_path}")
         return 0
+    
+    # Add agent type to trace name if this is a subagent
+    trace_prefix = f"Agent: {agent_type}" if agent_type else "Claude Code"
+    debug(f"Processing transcript: {transcript_path} (prefix={trace_prefix})")
 
     try:
         langfuse = Langfuse(public_key=public_key, secret_key=secret_key, host=host)
@@ -603,7 +663,8 @@ def main() -> int:
                 emitted += 1
                 turn_num = ss.turn_count + emitted
                 try:
-                    emit_turn(langfuse, session_id, turn_num, t, transcript_path)
+                    # Use trace_prefix, agent_type, and parent_session_id for subagents
+                    emit_turn(langfuse, session_id, turn_num, t, transcript_path, trace_prefix, agent_type, parent_session_id)
                 except Exception as e:
                     debug(f"emit_turn failed: {e}")
                     # continue emitting other turns
@@ -618,7 +679,8 @@ def main() -> int:
             pass
 
         dur = time.time() - start
-        info(f"Processed {emitted} turns in {dur:.2f}s (session={session_id})")
+        agent_info = f" (agent={agent_type})" if agent_type else ""
+        info(f"Processed {emitted} turns in {dur:.2f}s (session={session_id}{agent_info})")
         return 0
 
     except Exception as e:
@@ -626,8 +688,10 @@ def main() -> int:
         return 0
 
     finally:
+        # SECURITY FIX: Only flush, don't shutdown
+        # This script may be called multiple times, shutdown destroys the client
         try:
-            langfuse.shutdown()
+            langfuse.flush()
         except Exception:
             pass
 
