@@ -59,6 +59,7 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent S
 **Purpose:** Receives GitHub webhook events
 
 **Responsibilities:**
+
 - Validates webhook signatures
 - Parses GitHub events (issue_comment, pull_request)
 - Extracts `/agent` commands from comments
@@ -66,6 +67,7 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent S
 - Triggers automatic PR reviews
 
 **Key Files:**
+
 - `services/webhook/main.py`
 
 ### 2. Message Queue
@@ -74,12 +76,14 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent S
 **Purpose:** Decouples webhook from worker for async processing
 
 **Benefits:**
+
 - Handles webhook timeouts (GitHub expects response in 10s)
 - Enables horizontal scaling of workers
 - Provides retry mechanism
 - Allows long-running agent tasks
 
 **Key Files:**
+
 - `shared/queue.py` - Abstraction layer
 
 ### 3. Worker Service
@@ -88,6 +92,7 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent S
 **Purpose:** Processes agent requests
 
 **Responsibilities:**
+
 - Subscribes to message queue
 - Configures Claude Agent SDK from environment
 - Fetches CLAUDE.md from repositories (if present)
@@ -95,7 +100,8 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent S
 - Handles both manual commands and automatic reviews
 
 **Key Files:**
-- `services/agent-worker/worker.py`
+
+- `services/agent_worker/worker.py`
 
 ### 4. Claude Agent SDK
 
@@ -103,6 +109,7 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent S
 **Purpose:** Autonomous coding agent
 
 **Capabilities:**
+
 - Reads and analyzes code
 - Creates branches and commits
 - Opens pull requests
@@ -112,12 +119,14 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent S
 - Delegates tasks to specialized subagents
 
 **Configuration:**
+
 - `~/.claude/settings.json` - Permissions and model settings
 - `~/.claude/mcp.json` - MCP server configurations
 - `~/.claude/subagents/` - Subagent definitions
 - Programmatic configuration via `ClaudeAgentOptions`
 
 **Available Subagents:**
+
 - `architecture-reviewer` - Reviews design patterns and system architecture (PR reviews)
 - `security-reviewer` - Scans for security vulnerabilities (PR reviews)
 - `bug-hunter` - Identifies potential bugs and edge cases (PR reviews)
@@ -133,6 +142,7 @@ Simple Claude Code GitHub Agent is a lightweight system that uses Claude Agent S
 **Authentication:** GitHub App installation token (recommended) or Personal Access Token
 
 **Tools Provided:**
+
 - `read_file` - Read file contents
 - `list_files` - List directory contents
 - `create_branch` - Create new branches
@@ -175,10 +185,10 @@ See [README.md](README.md) for setup instructions.
 **Current Status:** Self-hosted only with Docker Compose and Redis.
 
 **Architecture:**
+
 - Minimal setup: webhook + worker + Redis
 - Full setup: Adds Langfuse observability stack (PostgreSQL, ClickHouse, MinIO)
 - Scaling: `docker-compose up --scale worker=N`
-
 
 ## Security
 
@@ -194,14 +204,17 @@ See [README.md](README.md) for setup instructions.
 > Claude Agent SDK is configured with broad permissions to enable autonomous operation.
 
 Claude Agent SDK permissions configured via `ClaudeAgentOptions`:
+
 - **allowed_tools:** Read, Write, Edit, Bash, MCP tools (including `mcp__github`)
 - **permission_mode:** `acceptEdits` (auto-approve file edits)
 
 GitHub MCP server configured programmatically:
+
 - All GitHub MCP tools available
 - Sequential review comments to prevent parallel issues
 
 **Security Implications:**
+
 - Agent can create branches, commit code, and open PRs without confirmation
 - Agent can read any file in repositories where the GitHub App is installed
 - Agent can execute bash commands within the worker container
@@ -242,6 +255,7 @@ GitHub MCP server configured programmatically:
 ### Langfuse Integration (Optional)
 
 When using the full Docker Compose setup, Langfuse provides complete observability:
+
 - **Traces:** End-to-end execution flow
 - **Generations:** Claude Agent SDK invocations
 - **Tool Calls:** GitHub MCP tool usage
@@ -271,24 +285,28 @@ The system includes specialized subagents that the main Claude Code agent can de
 **PR Review Subagents (Automatic)**
 
 **architecture-reviewer**
+
 - Evaluates design patterns and SOLID principles
 - Checks coupling and separation of concerns
 - Reviews API design and module boundaries
 - Use when: Reviewing architectural decisions
 
 **security-reviewer**
+
 - Scans for SQL injection, XSS, CSRF vulnerabilities
 - Checks authentication and authorization
 - Identifies sensitive data exposure
 - Use when: Security-critical code changes
 
 **bug-hunter**
+
 - Finds null/undefined handling issues
 - Identifies race conditions and edge cases
 - Reviews error handling
 - Use when: Complex logic or critical paths
 
 **code-quality-reviewer**
+
 - Reviews code style and readability
 - Checks documentation and naming
 - Identifies code duplication
@@ -297,18 +315,21 @@ The system includes specialized subagents that the main Claude Code agent can de
 **General Purpose Subagents**
 
 **context-gatherer**
+
 - Explores repository structure efficiently
 - Identifies relevant files for a given task
 - Read-only permissions for safe exploration
 - Use when: Starting work on unfamiliar code or investigating issues
 
 **bug-investigator**
+
 - Traces bugs to root causes
 - Analyzes execution paths and error conditions
 - Suggests specific fixes
 - Use when: Investigating reported bugs or unexpected behavior
 
 **test-writer**
+
 - Creates comprehensive test cases
 - Covers edge cases and error conditions
 - Matches existing test framework style

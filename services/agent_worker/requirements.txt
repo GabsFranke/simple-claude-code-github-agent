@@ -8,3 +8,6 @@ cryptography>=46.0.5
 claude-agent-sdk>=0.1.44,<0.2.0
 anyio>=4.12.1
 google-auth>=2.48.0
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+httpx>=0.28.1

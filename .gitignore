@@ -67,3 +67,5 @@ private-key.pem
 
 # ngrok
 ngrok.yml
+
+claude-plugins-official/

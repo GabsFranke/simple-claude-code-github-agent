@@ -31,11 +31,12 @@ skip_gitignore = true
 
 [tool.pylint.messages_control]
 disable = [
-    "C0111",  # missing-docstring
-    "C0103",  # invalid-name
-    "R0903",  # too-few-public-methods
-    "R0913",  # too-many-arguments
-    "W0212",  # protected-access
+    "C0111",  # missing-docstring - we have docstrings where needed
+    "C0103",  # invalid-name - allow short variable names
+    "R0903",  # too-few-public-methods - dataclasses are fine
+    "R0913",  # too-many-arguments - sometimes necessary
+    "W0212",  # protected-access - allow when needed
+    "W1203",  # logging-fstring-interpolation - f-strings are more readable
 ]
 max-line-length = 88
 
@@ -56,6 +57,16 @@ warn_no_return = true
 warn_unreachable = true
 strict_equality = true
 ignore_missing_imports = true
+exclude = [
+    "venv",
+    ".venv",
+    "build",
+    "dist",
+    ".mypy_cache",
+    ".pytest_cache",
+    "__pycache__",
+    "claude-plugins-official",
+]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
