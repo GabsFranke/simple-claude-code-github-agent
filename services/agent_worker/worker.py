@@ -113,9 +113,9 @@ def login_claude_code():
     if config.anthropic.anthropic_base_url:
         os.environ["ANTHROPIC_BASE_URL"] = config.anthropic.anthropic_base_url
     if config.anthropic.anthropic_vertex_project_id:
-        os.environ[
-            "ANTHROPIC_VERTEX_PROJECT_ID"
-        ] = config.anthropic.anthropic_vertex_project_id
+        os.environ["ANTHROPIC_VERTEX_PROJECT_ID"] = (
+            config.anthropic.anthropic_vertex_project_id
+        )
     if config.anthropic.anthropic_vertex_region:
         os.environ["ANTHROPIC_VERTEX_REGION"] = config.anthropic.anthropic_vertex_region
 

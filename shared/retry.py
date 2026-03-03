@@ -39,9 +39,7 @@ def async_retry(
                 except exceptions as e:
                     last_exception = e
                     if attempt < max_attempts - 1:
-                        delay = min(
-                            base_delay * (exponential_base**attempt), max_delay
-                        )
+                        delay = min(base_delay * (exponential_base**attempt), max_delay)
                         logger.warning(
                             f"{func.__name__} failed (attempt {attempt + 1}/{max_attempts}): {e}. "
                             f"Retrying in {delay:.2f}s..."

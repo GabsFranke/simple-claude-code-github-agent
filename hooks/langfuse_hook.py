@@ -10,9 +10,9 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 # --- Langfuse import (fail-open) ---
 try:
@@ -109,17 +109,17 @@ class FileLock:
             pass
 
 
-def load_state() -> Dict[str, Any]:
+def load_state() -> dict[str, Any]:
     try:
         if not STATE_FILE.exists():
             return {}
-        data: Dict[str, Any] = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data: dict[str, Any] = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         return data
     except Exception:
         return {}
 
 
-def save_state(state: Dict[str, Any]) -> None:
+def save_state(state: dict[str, Any]) -> None:
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = STATE_FILE.with_suffix(".tmp")
@@ -136,7 +136,7 @@ def state_key(session_id: str, transcript_path: str) -> str:
 
 
 # ----------------- Hook payload -----------------
-def read_hook_payload() -> Dict[str, Any]:
+def read_hook_payload() -> dict[str, Any]:
     """
     Claude Code hooks pass a JSON payload on stdin.
     This script tolerates missing/empty stdin by returning {}.
@@ -145,15 +145,15 @@ def read_hook_payload() -> Dict[str, Any]:
         data = sys.stdin.read()
         if not data.strip():
             return {}
-        result: Dict[str, Any] = json.loads(data)
+        result: dict[str, Any] = json.loads(data)
         return result
     except Exception:
         return {}
 
 
 def extract_session_and_transcript(
-    payload: Dict[str, Any],
-) -> Tuple[Optional[str], Optional[Path], Optional[str], Optional[str]]:
+    payload: dict[str, Any],
+) -> tuple[str | None, Path | None, str | None, str | None]:
     """
     Tries a few plausible field names; exact keys can vary across hook types/versions.
     Prefer structured values from stdin over heuristics.
@@ -161,7 +161,7 @@ def extract_session_and_transcript(
     For SubagentStop events, use agent_transcript_path and agent_id.
     Returns: (session_id, transcript_path, agent_type, parent_session_id)
     """
-    session_id: Optional[str] = (
+    session_id: str | None = (
         payload.get("sessionId")
         or payload.get("session_id")
         or payload.get("session", {}).get("id")
@@ -169,8 +169,8 @@ def extract_session_and_transcript(
 
     # For SubagentStop, use agent_transcript_path and create unique session_id
     hook_event = payload.get("hook_event_name")
-    agent_type: Optional[str] = None
-    parent_session_id: Optional[str] = None
+    agent_type: str | None = None
+    parent_session_id: str | None = None
 
     if hook_event == "SubagentStop":
         transcript = payload.get("agent_transcript_path")
@@ -192,7 +192,7 @@ def extract_session_and_transcript(
 
     if transcript:
         try:
-            transcript_path: Optional[Path] = Path(transcript).expanduser().resolve()
+            transcript_path: Path | None = Path(transcript).expanduser().resolve()
         except Exception:
             transcript_path = None
     else:
@@ -202,13 +202,13 @@ def extract_session_and_transcript(
 
 
 # ----------------- Transcript parsing helpers -----------------
-def get_content(msg: Dict[str, Any]) -> Any:
+def get_content(msg: dict[str, Any]) -> Any:
     if "message" in msg and isinstance(msg.get("message"), dict):
         return msg["message"].get("content")
     return msg.get("content")
 
 
-def get_role(msg: Dict[str, Any]) -> Optional[str]:
+def get_role(msg: dict[str, Any]) -> str | None:
     # Claude Code transcript lines commonly have type=user/assistant OR message.role
     t = msg.get("type")
     if t in ("user", "assistant"):
@@ -221,7 +221,7 @@ def get_role(msg: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def is_tool_result(msg: Dict[str, Any]) -> bool:
+def is_tool_result(msg: dict[str, Any]) -> bool:
     role = get_role(msg)
     if role != "user":
         return False
@@ -233,8 +233,8 @@ def is_tool_result(msg: Dict[str, Any]) -> bool:
     return False
 
 
-def iter_tool_results(content: Any) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+def iter_tool_results(content: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     if isinstance(content, list):
         for x in content:
             if isinstance(x, dict) and x.get("type") == "tool_result":
@@ -242,8 +242,8 @@ def iter_tool_results(content: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def iter_tool_uses(content: Any) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+def iter_tool_uses(content: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     if isinstance(content, list):
         for x in content:
             if isinstance(x, dict) and x.get("type") == "tool_use":
@@ -255,7 +255,7 @@ def extract_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts: List[str] = []
+        parts: list[str] = []
         for x in content:
             if isinstance(x, dict) and x.get("type") == "text":
                 parts.append(x.get("text", ""))
@@ -267,7 +267,7 @@ def extract_text(content: Any) -> str:
 
 def truncate_text(
     s: str | None, max_chars: int = MAX_CHARS
-) -> Tuple[str, Dict[str, Any]]:
+) -> tuple[str, dict[str, Any]]:
     if s is None:
         return "", {"truncated": False, "orig_len": 0}
     orig_len = len(s)
@@ -282,14 +282,14 @@ def truncate_text(
     }
 
 
-def get_model(msg: Dict[str, Any]) -> str:
+def get_model(msg: dict[str, Any]) -> str:
     m = msg.get("message")
     if isinstance(m, dict):
         return m.get("model") or "claude"
     return "claude"
 
 
-def get_message_id(msg: Dict[str, Any]) -> Optional[str]:
+def get_message_id(msg: dict[str, Any]) -> str | None:
     m = msg.get("message")
     if isinstance(m, dict):
         mid = m.get("id")
@@ -306,7 +306,7 @@ class SessionState:
     turn_count: int = 0
 
 
-def load_session_state(global_state: Dict[str, Any], key: str) -> SessionState:
+def load_session_state(global_state: dict[str, Any], key: str) -> SessionState:
     s = global_state.get(key, {})
     return SessionState(
         offset=int(s.get("offset", 0)),
@@ -316,19 +316,19 @@ def load_session_state(global_state: Dict[str, Any], key: str) -> SessionState:
 
 
 def write_session_state(
-    global_state: Dict[str, Any], key: str, ss: SessionState
+    global_state: dict[str, Any], key: str, ss: SessionState
 ) -> None:
     global_state[key] = {
         "offset": ss.offset,
         "buffer": ss.buffer,
         "turn_count": ss.turn_count,
-        "updated": datetime.now(timezone.utc).isoformat(),
+        "updated": datetime.now(UTC).isoformat(),
     }
 
 
 def read_new_jsonl(
     transcript_path: Path, ss: SessionState
-) -> Tuple[List[Dict[str, Any]], SessionState]:
+) -> tuple[list[dict[str, Any]], SessionState]:
     """
     Reads only new bytes since ss.offset. Keeps ss.buffer for partial last line.
     Returns parsed JSON lines (best-effort) and updated state.
@@ -359,7 +359,7 @@ def read_new_jsonl(
     ss.buffer = lines[-1]
     ss.offset = new_offset
 
-    msgs: List[Dict[str, Any]] = []
+    msgs: list[dict[str, Any]] = []
     for line in lines[:-1]:
         line = line.strip()
         if not line:
@@ -375,12 +375,12 @@ def read_new_jsonl(
 # ----------------- Turn assembly -----------------
 @dataclass
 class Turn:
-    user_msg: Dict[str, Any]
-    assistant_msgs: List[Dict[str, Any]]
-    tool_results_by_id: Dict[str, Any]
+    user_msg: dict[str, Any]
+    assistant_msgs: list[dict[str, Any]]
+    tool_results_by_id: dict[str, Any]
 
 
-def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
+def build_turns(messages: list[dict[str, Any]]) -> list[Turn]:
     """
     Groups incremental transcript rows into turns:
     user (non-tool-result) -> assistant messages -> (tool_result rows, possibly interleaved)
@@ -388,16 +388,16 @@ def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
     - assistant message dedupe by message.id (latest row wins)
     - tool results dedupe by tool_use_id (latest wins)
     """
-    turns: List[Turn] = []
-    current_user: Optional[Dict[str, Any]] = None
+    turns: list[Turn] = []
+    current_user: dict[str, Any] | None = None
 
     # assistant messages for current turn:
-    assistant_order: List[
-        str
-    ] = []  # message ids in order of first appearance (or synthetic)
-    assistant_latest: Dict[str, Dict[str, Any]] = {}  # id -> latest msg
+    assistant_order: list[str] = (
+        []
+    )  # message ids in order of first appearance (or synthetic)
+    assistant_latest: dict[str, dict[str, Any]] = {}  # id -> latest msg
 
-    tool_results_by_id: Dict[str, Any] = {}  # tool_use_id -> content
+    tool_results_by_id: dict[str, Any] = {}  # tool_use_id -> content
 
     def flush_turn():
         nonlocal current_user, assistant_order, assistant_latest, tool_results_by_id, turns
@@ -458,9 +458,9 @@ def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
 
 # ----------------- Langfuse emit -----------------
 def _tool_calls_from_assistants(
-    assistant_msgs: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    calls: List[Dict[str, Any]] = []
+    assistant_msgs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
     for am in assistant_msgs:
         for tu in iter_tool_uses(get_content(am)):
             tid = tu.get("id") or ""
@@ -487,8 +487,8 @@ def emit_turn(
     turn: Turn,
     transcript_path: Path,
     trace_prefix: str = "Claude Code",
-    agent_type: Optional[str] = None,
-    parent_session_id: Optional[str] = None,
+    agent_type: str | None = None,
+    parent_session_id: str | None = None,
 ) -> None:
     user_text_raw = extract_text(get_content(turn.user_msg))
     user_text, user_text_meta = truncate_text(user_text_raw)
