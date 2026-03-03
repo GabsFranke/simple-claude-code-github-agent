@@ -1,5 +1,7 @@
 # Simple Claude Code GitHub Agent
 
+[![Tests](https://github.com/YOUR_USERNAME/simple-claude-code-github-agent/actions/workflows/test.yml/badge.svg)](https://github.com/YOUR_USERNAME/simple-claude-code-github-agent/actions/workflows/test.yml)
+
 AI-powered GitHub agent that automatically reviews pull requests and responds to commands using Claude Agent SDK and GitHub's official MCP server.
 
 > [!WARNING]
@@ -41,6 +43,7 @@ Copy the forwarding URL (e.g., `https://abc123.ngrok.io`)
 2. **Create a GitHub App:**
 
 Go to GitHub Settings → Developer settings → GitHub Apps → New GitHub App:
+
 - **GitHub App name**: Choose a unique name (e.g., "My Claude Agent")
 - **Homepage URL**: Your repository or any URL
 - **Webhook URL**: `https://your-ngrok-url.ngrok.io/webhook`
@@ -52,7 +55,7 @@ Go to GitHub Settings → Developer settings → GitHub Apps → New GitHub App:
     - Issues: Read & write
     - Pull requests: Read & write
     - Metadata: Read-only
-- **Subscribe to events**: 
+- **Subscribe to events**:
   - Discussion comment
   - Issue comment
   - Issues
@@ -108,6 +111,7 @@ docker-compose down
 5. **Access Langfuse (optional, only if using full setup):**
 
 View agent traces and debug tool calls at http://localhost:7500
+
 - Email: `admin@example.com`
 - Password: `admin123`
 
@@ -118,6 +122,7 @@ See [LANGFUSE_SETUP.md](LANGFUSE_SETUP.md) for details.
 ### Automatic PR Reviews
 
 When you open a PR, the agent automatically reviews it and posts:
+
 - General code review summary
 - Inline comments on specific lines
 - Suggestions for improvements
@@ -141,6 +146,7 @@ Add a `CLAUDE.md` file to your repository root with custom instructions:
 # Agent Instructions
 
 When working on this project:
+
 - Follow the existing code style
 - Update documentation if you change APIs
 ```
@@ -150,17 +156,20 @@ When working on this project:
 The agent uses specialized subagents for intelligent PR reviews:
 
 **PR Review Subagents (used selectively based on changes):**
+
 - **architecture-reviewer**: Evaluates design patterns, SOLID principles, and system architecture
 - **security-reviewer**: Scans for vulnerabilities (SQL injection, XSS, auth issues, etc.)
 - **bug-hunter**: Identifies potential bugs, edge cases, and error handling issues
 - **code-quality-reviewer**: Reviews code style, readability, and maintainability
 
 **General Purpose Subagents:**
+
 - **context-gatherer**: Explores codebase to find relevant files
 - **bug-investigator**: Traces bugs to root causes
 - **test-writer**: Creates comprehensive test cases
 
 The main agent intelligently decides which subagents to use based on the PR:
+
 - Documentation changes → `code-quality-reviewer` only
 - Bug fixes → `bug-hunter` + `code-quality-reviewer`
 - New features → Multiple agents as needed
@@ -188,6 +197,7 @@ For PR review flow details, see [docs/PR_REVIEW_FLOW.md](docs/PR_REVIEW_FLOW.md)
 For debugging subagents, see [docs/DEBUGGING_SUBAGENTS.md](docs/DEBUGGING_SUBAGENTS.md).
 
 **Note**: Langfuse hook logs are only available inside the container (not via `docker-compose logs`). View with:
+
 ```bash
 docker-compose exec worker cat /root/.claude/state/langfuse_hook.log
 ```
@@ -202,6 +212,7 @@ GitHub Event → Webhook → Redis Queue → Worker → Claude Agent SDK
 ```
 
 **Components:**
+
 - **Webhook Service** - Receives GitHub events (FastAPI)
 - **Worker** - Uses Claude Agent SDK to process requests programmatically
 - **Message Queue** - Redis for job distribution
@@ -213,6 +224,7 @@ GitHub Event → Webhook → Redis Queue → Worker → Claude Agent SDK
 ### Environment Variables
 
 **Required:**
+
 - `ANTHROPIC_AUTH_TOKEN`: Your Anthropic API key
 - `GITHUB_WEBHOOK_SECRET`: Secret for webhook signature verification
 - `GITHUB_APP_ID`: Your GitHub App ID
@@ -220,6 +232,7 @@ GitHub Event → Webhook → Redis Queue → Worker → Claude Agent SDK
 - `GITHUB_PRIVATE_KEY`: Contents of the private key .pem file
 
 **Optional:**
+
 - `ANTHROPIC_BASE_URL`: Override API endpoint for alternative providers
 - `ANTHROPIC_DEFAULT_SONNET_MODEL`: Override model name
 - `LANGFUSE_PUBLIC_KEY`: Langfuse API key (pre-configured for self-hosted setup)
@@ -257,13 +270,28 @@ docker-compose up -d worker
 
 The agent works identically with all providers - just toggle the environment variables and recreate the container.
 
+## Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=shared --cov=services --cov-report=html
+```
+
+See [docs/TESTING.md](docs/TESTING.md) for the complete testing guide.
+
+Tests run automatically on every PR via GitHub Actions.
+
 ## Development
 
 ### Project Structure
+
 ```
 simple-claude-code-github-agent/
 ├── services/
-│   ├── agent-worker/         # Claude Code worker
+│   ├── agent_worker/         # Claude Code worker
 │   └── webhook/              # Webhook receiver
 ├── shared/
 │   └── queue.py             # Message queue abstraction

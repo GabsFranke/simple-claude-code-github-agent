@@ -5,7 +5,8 @@ services:
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "myredissecret", "ping"]
+      test:
+        ["CMD", "redis-cli", "--no-auth-warning", "-a", "myredissecret", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -29,7 +30,7 @@ services:
   worker:
     build:
       context: .
-      dockerfile: services/agent-worker/Dockerfile
+      dockerfile: services/agent_worker/Dockerfile
     volumes:
       # Mount your personal gcloud credentials for local Vertex AI access (Windows path)
       - ${APPDATA}/gcloud/application_default_credentials.json:/root/.config/gcloud/application_default_credentials.json:ro
