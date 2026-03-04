@@ -1,6 +1,6 @@
 # Development Guide
 
-Complete guide for developers working on the Simple Claude Code GitHub Agent.
+Complete guide for developers working on the Claude Code GitHub Agent.
 
 ## Setup
 
@@ -8,8 +8,8 @@ Complete guide for developers working on the Simple Claude Code GitHub Agent.
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/simple-claude-code-github-agent.git
-cd simple-claude-code-github-agent
+git clone https://github.com/yourusername/claude-code-github-agent.git
+cd claude-code-github-agent
 
 # Create and activate virtual environment
 python -m venv venv
@@ -51,7 +51,7 @@ docker-compose up --build -d
 ## Project Structure
 
 ```
-simple-claude-code-github-agent/
+claude-code-github-agent/
 ├── services/
 │   ├── agent_worker/         # Job coordinator
 │   ├── sandbox_executor/     # Claude SDK execution

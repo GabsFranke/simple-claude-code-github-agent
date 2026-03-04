@@ -1,6 +1,6 @@
 # Architecture
 
-Complete system architecture for the Simple Claude Code GitHub Agent.
+Complete system architecture for the Claude Code GitHub Agent.
 
 ## System Overview
 

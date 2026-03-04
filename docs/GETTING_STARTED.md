@@ -1,6 +1,6 @@
 # Getting Started
 
-Complete guide to installing and running the Simple Claude Code GitHub Agent.
+Complete guide to installing and running the Claude Code GitHub Agent.
 
 ## Prerequisites
 
@@ -39,8 +39,8 @@ Note your App ID and Installation ID.
 ### 3. Configure
 
 ```bash
-git clone https://github.com/yourusername/simple-claude-code-github-agent.git
-cd simple-claude-code-github-agent
+git clone https://github.com/yourusername/claude-code-github-agent.git
+cd claude-code-github-agent
 cp .env.example .env
 ```
 

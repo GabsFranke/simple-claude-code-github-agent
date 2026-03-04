@@ -1,4 +1,4 @@
-# Simple Claude Code GitHub Agent
+# Claude Code GitHub Agent
 
 AI-powered GitHub agent that automatically reviews pull requests and responds to commands using Claude Agent SDK and GitHub's official MCP server.
 
@@ -287,7 +287,7 @@ Tests run automatically on every PR via GitHub Actions.
 ### Project Structure
 
 ```
-simple-claude-code-github-agent/
+claude-code-github-agent/
 ├── services/
 │   ├── agent_worker/         # Claude Code worker
 │   └── webhook/              # Webhook receiver

@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Comprehensive testing for the Simple Claude Code GitHub Agent.
+Comprehensive testing for the Claude Code GitHub Agent.
 
 ## Test Structure
 
