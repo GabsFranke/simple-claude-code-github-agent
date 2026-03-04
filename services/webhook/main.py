@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 logger.info(f"Logging configured at {config.log_level} level")
 logger.info(f"Configuration loaded: Port={config.port}")
 
-app = FastAPI(title="SimpleClaudeCodeGitHubAgent Webhook Service")
+app = FastAPI(title="ClaudeCodeGitHubAgent Webhook Service")
 
 # Initialize queue
 queue = get_queue()
@@ -75,7 +75,7 @@ queue = get_queue()
 @app.get("/")
 async def root():
     """Root endpoint."""
-    return {"status": "SimpleClaudeCodeGitHubAgent webhook service is running"}
+    return {"status": "ClaudeCodeGitHubAgent webhook service is running"}
 
 
 @app.get("/health")
