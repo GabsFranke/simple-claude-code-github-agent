@@ -202,7 +202,9 @@ class TestExecuteInWorkspace:
                 "services.sandbox_executor.sandbox_worker.ClaudeSDKClient",
                 return_value=mock_client,
             ):
-                with pytest.raises(RuntimeError, match="Test error"):
+                with pytest.raises(
+                    Exception, match="Failed to execute Claude Agent SDK: Test error"
+                ):
                     await execute_in_workspace(workspace, job_data)
 
             # Verify we're back to original directory
