@@ -138,10 +138,14 @@ class TestProcessSyncRequest:
 
         message = {"repo": "owner/repo", "ref": "main"}
 
-        with patch(
-            "services.repo_sync.sync_worker.get_github_auth_service"
-        ) as mock_auth:
-            mock_auth_service = AsyncMock()
+        with (
+            patch(
+                "services.repo_sync.sync_worker.get_github_auth_service",
+                new_callable=AsyncMock,
+            ) as mock_auth,
+            patch("services.repo_sync.sync_worker.os.makedirs"),
+        ):
+            mock_auth_service = MagicMock()
             mock_auth_service.is_configured.return_value = False
             mock_auth.return_value = mock_auth_service
 
