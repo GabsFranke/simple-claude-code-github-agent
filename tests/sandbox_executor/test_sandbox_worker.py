@@ -314,6 +314,7 @@ class TestProcessJob:
 
         mock_queue = AsyncMock()
         mock_queue.complete_job = AsyncMock()
+        mock_queue.redis = AsyncMock()
 
         job_id = "550e8400-e29b-41d4-a716-446655440000"  # Valid UUID
         job_data = {
@@ -324,10 +325,22 @@ class TestProcessJob:
             "user": "testuser",
         }
 
-        with patch(
-            "services.sandbox_executor.sandbox_worker.execute_in_workspace",
-            new_callable=AsyncMock,
-            return_value="Test response",
+        with (
+            patch(
+                "services.sandbox_executor.sandbox_worker.ensure_repo_synced",
+                new_callable=AsyncMock,
+                return_value="/var/cache/repos/owner/repo.git",
+            ),
+            patch(
+                "services.sandbox_executor.sandbox_worker.execute_git_command",
+                new_callable=AsyncMock,
+                return_value=(0, "", ""),
+            ),
+            patch(
+                "services.sandbox_executor.sandbox_worker.execute_in_workspace",
+                new_callable=AsyncMock,
+                return_value="Test response",
+            ),
         ):
             await process_job(mock_queue, job_id, job_data)
 
@@ -346,6 +359,7 @@ class TestProcessJob:
 
         mock_queue = AsyncMock()
         mock_queue.complete_job = AsyncMock()
+        mock_queue.redis = AsyncMock()
 
         job_id = "550e8400-e29b-41d4-a716-446655440001"  # Valid UUID
         job_data = {
@@ -356,10 +370,22 @@ class TestProcessJob:
             "user": "user",
         }
 
-        with patch(
-            "services.sandbox_executor.sandbox_worker.execute_in_workspace",
-            new_callable=AsyncMock,
-            side_effect=Exception("Execution failed"),
+        with (
+            patch(
+                "services.sandbox_executor.sandbox_worker.ensure_repo_synced",
+                new_callable=AsyncMock,
+                return_value="/var/cache/repos/owner/repo.git",
+            ),
+            patch(
+                "services.sandbox_executor.sandbox_worker.execute_git_command",
+                new_callable=AsyncMock,
+                return_value=(0, "", ""),
+            ),
+            patch(
+                "services.sandbox_executor.sandbox_worker.execute_in_workspace",
+                new_callable=AsyncMock,
+                side_effect=Exception("Execution failed"),
+            ),
         ):
             await process_job(mock_queue, job_id, job_data)
 
@@ -378,12 +404,13 @@ class TestProcessJob:
 
         mock_queue = AsyncMock()
         mock_queue.complete_job = AsyncMock()
+        mock_queue.redis = AsyncMock()
 
         job_id = "550e8400-e29b-41d4-a716-446655440002"  # Valid UUID
         job_data = {
             "prompt": "Test",
             "github_token": "token",
-            "repo": "repo",
+            "repo": "owner/repo",
             "issue_number": 1,
             "user": "user",
         }
@@ -395,10 +422,22 @@ class TestProcessJob:
             created_workspace = workspace
             return "Response"
 
-        with patch(
-            "services.sandbox_executor.sandbox_worker.execute_in_workspace",
-            new_callable=AsyncMock,
-            side_effect=capture_workspace,
+        with (
+            patch(
+                "services.sandbox_executor.sandbox_worker.ensure_repo_synced",
+                new_callable=AsyncMock,
+                return_value="/var/cache/repos/owner/repo.git",
+            ),
+            patch(
+                "services.sandbox_executor.sandbox_worker.execute_git_command",
+                new_callable=AsyncMock,
+                return_value=(0, "", ""),
+            ),
+            patch(
+                "services.sandbox_executor.sandbox_worker.execute_in_workspace",
+                new_callable=AsyncMock,
+                side_effect=capture_workspace,
+            ),
         ):
             await process_job(mock_queue, job_id, job_data)
 

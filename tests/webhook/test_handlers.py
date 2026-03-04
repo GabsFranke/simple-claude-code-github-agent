@@ -19,6 +19,7 @@ class TestCommentHandler:
     async def test_handle_comment_with_agent_command(self):
         """Test handling comment with /agent command."""
         mock_queue = AsyncMock()
+        mock_sync_queue = AsyncMock()
         data = {
             "comment": {
                 "body": "/agent review this code",
@@ -28,7 +29,7 @@ class TestCommentHandler:
             "repository": {"full_name": "owner/repo"},
         }
 
-        result = await handle_comment_created(data, mock_queue)
+        result = await handle_comment_created(data, mock_queue, mock_sync_queue)
 
         assert result == {
             "status": "accepted",
@@ -42,11 +43,13 @@ class TestCommentHandler:
                 "user": "testuser",
             }
         )
+        mock_sync_queue.publish.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_handle_comment_without_command(self):
         """Test handling comment without /agent command."""
         mock_queue = AsyncMock()
+        mock_sync_queue = AsyncMock()
         data = {
             "comment": {
                 "body": "Just a regular comment",
@@ -56,22 +59,24 @@ class TestCommentHandler:
             "repository": {"full_name": "owner/repo"},
         }
 
-        result = await handle_comment_created(data, mock_queue)
+        result = await handle_comment_created(data, mock_queue, mock_sync_queue)
 
         assert result is None
         mock_queue.publish.assert_not_called()
+        mock_sync_queue.publish.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_comment_with_registered_command(self):
         """Test handling comment with registered command like /review."""
         mock_queue = AsyncMock()
+        mock_sync_queue = AsyncMock()
         data = {
             "comment": {"body": "/review", "user": {"login": "testuser"}},
             "issue": {"number": 456},
             "repository": {"full_name": "owner/repo"},
         }
 
-        result = await handle_comment_created(data, mock_queue)
+        result = await handle_comment_created(data, mock_queue, mock_sync_queue)
 
         assert result == {
             "status": "accepted",
@@ -85,6 +90,7 @@ class TestCommentHandler:
                 "user": "testuser",
             }
         )
+        mock_sync_queue.publish.assert_called_once()
 
 
 class TestIssueHandler:
@@ -94,6 +100,7 @@ class TestIssueHandler:
     async def test_handle_issue_opened_with_agent_command(self):
         """Test handling issue opened with /agent command in body."""
         mock_queue = AsyncMock()
+        mock_sync_queue = AsyncMock()
         data = {
             "issue": {
                 "number": 789,
@@ -104,7 +111,7 @@ class TestIssueHandler:
             "repository": {"full_name": "owner/repo"},
         }
 
-        result = await handle_issue_opened(data, mock_queue)
+        result = await handle_issue_opened(data, mock_queue, mock_sync_queue)
 
         assert result == {
             "status": "accepted",
@@ -118,11 +125,13 @@ class TestIssueHandler:
                 "user": "testuser",
             }
         )
+        mock_sync_queue.publish.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_handle_issue_opened_without_command_auto_triage(self):
         """Test handling issue opened without command triggers auto-triage."""
         mock_queue = AsyncMock()
+        mock_sync_queue = AsyncMock()
         data = {
             "issue": {
                 "number": 101,
@@ -133,7 +142,7 @@ class TestIssueHandler:
             "repository": {"full_name": "owner/repo"},
         }
 
-        result = await handle_issue_opened(data, mock_queue)
+        result = await handle_issue_opened(data, mock_queue, mock_sync_queue)
 
         assert result == {
             "status": "accepted",
@@ -146,11 +155,13 @@ class TestIssueHandler:
         assert call_args["command"] == "Triage this issue: Feature request"
         assert call_args["user"] == "testuser"
         assert call_args["auto_triage"] is True
+        mock_sync_queue.publish.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_handle_issue_opened_with_none_body(self):
         """Test handling issue opened with None body triggers auto-triage."""
         mock_queue = AsyncMock()
+        mock_sync_queue = AsyncMock()
         data = {
             "issue": {
                 "number": 202,
@@ -161,7 +172,7 @@ class TestIssueHandler:
             "repository": {"full_name": "owner/repo"},
         }
 
-        result = await handle_issue_opened(data, mock_queue)
+        result = await handle_issue_opened(data, mock_queue, mock_sync_queue)
 
         assert result == {
             "status": "accepted",
@@ -170,6 +181,7 @@ class TestIssueHandler:
         mock_queue.publish.assert_called_once()
         call_args = mock_queue.publish.call_args[0][0]
         assert call_args["auto_triage"] is True
+        mock_sync_queue.publish.assert_called_once()
 
 
 class TestPRHandler:
@@ -179,6 +191,7 @@ class TestPRHandler:
     async def test_handle_pr_opened_auto_review(self):
         """Test handling PR opened triggers auto-review."""
         mock_queue = AsyncMock()
+        mock_sync_queue = AsyncMock()
         data = {
             "pull_request": {
                 "number": 42,
@@ -188,7 +201,7 @@ class TestPRHandler:
             "repository": {"full_name": "owner/repo"},
         }
 
-        result = await handle_pr_opened(data, mock_queue)
+        result = await handle_pr_opened(data, mock_queue, mock_sync_queue)
 
         assert result == {"status": "accepted", "message": "Agent will review this PR"}
         mock_queue.publish.assert_called_once_with(
@@ -200,6 +213,7 @@ class TestPRHandler:
                 "auto_review": True,
             }
         )
+        mock_sync_queue.publish.assert_called_once()
 
     def test_handle_pr_other_action_ignored(self):
         """Test handling other PR actions are ignored."""
