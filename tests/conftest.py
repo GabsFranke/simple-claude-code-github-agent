@@ -27,6 +27,17 @@ os.environ.setdefault("PORT", "8000")
 sys.modules["dotenv"] = MagicMock()
 sys.modules["dotenv.main"] = MagicMock()
 
+# CRITICAL: Mock claude_agent_sdk BEFORE any imports that use it
+# This allows sandbox_executor tests to run without the SDK installed
+mock_sdk = MagicMock()
+mock_sdk.AssistantMessage = MagicMock
+mock_sdk.ClaudeAgentOptions = MagicMock
+mock_sdk.ClaudeSDKClient = MagicMock
+mock_sdk.HookMatcher = MagicMock
+mock_sdk.ResultMessage = MagicMock
+mock_sdk.TextBlock = MagicMock
+sys.modules["claude_agent_sdk"] = mock_sdk
+
 from redis.asyncio import Redis  # noqa: E402
 
 
