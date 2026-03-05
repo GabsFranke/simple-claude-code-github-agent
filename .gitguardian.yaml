@@ -4,12 +4,16 @@ paths-ignore:
   - tests/fixtures/**
   - "**/*test*.py"
   - "**/*_test.py"
+  - .env.example
+  - docs/**
 
 # Specific patterns to ignore
 matches-ignore:
-  - name: Test RSA keys
+  - name: Test RSA keys and documentation examples
     match: "-----BEGIN RSA PRIVATE KEY-----"
     paths:
       - tests/**
       - "**/test_*.py"
       - "**/*_test.py"
+      - .env.example
+      - docs/**

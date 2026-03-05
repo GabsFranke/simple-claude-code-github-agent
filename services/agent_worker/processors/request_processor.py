@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING, Optional
 import httpx
 from langfuse import Langfuse
 
-from shared import JobQueue
+from shared import GitHubAuthService, JobQueue
 
-from ..auth import GitHubTokenManager
 from ..commands import CommandContext, get_command_registry
 from .repository_context_loader import RepositoryContextLoader
 
@@ -24,7 +23,7 @@ class RequestProcessor:
 
     def __init__(
         self,
-        token_manager: GitHubTokenManager,
+        token_manager: GitHubAuthService,
         http_client: httpx.AsyncClient,
         job_queue: JobQueue,
         langfuse_client: Langfuse | None = None,
@@ -53,8 +52,19 @@ class RequestProcessor:
         user: str,
         auto_review: bool = False,
         auto_triage: bool = False,
+        ref: str | None = None,
     ) -> str:
-        """Process a single agent request by creating a job."""
+        """Process a single agent request by creating a job.
+
+        Args:
+            repo: Repository full name (owner/repo)
+            issue_number: Issue or PR number
+            command: Command to execute
+            user: User who triggered the request
+            auto_review: Whether this is an automatic PR review
+            auto_triage: Whether this is an automatic issue triage
+            ref: Git ref to use (if None, will be detected based on context)
+        """
         logger.info(f"Processing request for {repo} issue #{issue_number} by {user}")
         logger.info(f"Command: {command}")
 
@@ -80,7 +90,7 @@ class RequestProcessor:
 
                 try:
                     job_id = await self._execute(
-                        repo, issue_number, command, user, auto_review, auto_triage
+                        repo, issue_number, command, user, auto_review, auto_triage, ref
                     )
 
                     trace.update(
@@ -104,7 +114,7 @@ class RequestProcessor:
                     self.langfuse.flush()
         else:
             return await self._execute(
-                repo, issue_number, command, user, auto_review, auto_triage
+                repo, issue_number, command, user, auto_review, auto_triage, ref
             )
 
     async def _execute(
@@ -115,8 +125,19 @@ class RequestProcessor:
         user: str,
         auto_review: bool,
         auto_triage: bool,
+        ref: str | None = None,
     ) -> str:
-        """Create a job for sandbox execution."""
+        """Create a job for sandbox execution.
+
+        Args:
+            repo: Repository full name
+            issue_number: Issue or PR number
+            command: Command to execute
+            user: User who triggered the request
+            auto_review: Whether this is an automatic PR review
+            auto_triage: Whether this is an automatic issue triage
+            ref: Git ref to use (if None, will be detected)
+        """
         # Determine event type
         if auto_review:
             event_type = "auto_review"
@@ -150,14 +171,26 @@ class RequestProcessor:
                 f"Failed to fetch CLAUDE.md from {repo}, continuing without repository context: {e}"
             )
 
+        # Determine ref based on context (use provided ref or detect)
+        if ref is None:
+            ref = "main"
+            if auto_review:
+                # For PR reviews, use the PR head ref
+                ref = f"refs/pull/{issue_number}/head"
+            # For issues and manual commands, default to main
+
+        logger.info(f"Using ref: {ref}")
+
         # Get GitHub token
         github_token = await self.token_manager.get_token()
 
         # Create job in queue
+        logger.info(f"Creating job with ref: {ref}")
         job_id = await self.job_queue.create_job(
             {
                 "repo": repo,
                 "issue_number": issue_number,
+                "ref": ref,
                 "prompt": prompt,
                 "github_token": github_token,
                 "user": user,

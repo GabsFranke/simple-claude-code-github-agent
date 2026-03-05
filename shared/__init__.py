@@ -18,12 +18,19 @@ from .exceptions import (
     GitHubAPIError,
     QueueError,
     RateLimitError,
+    RepositorySyncError,
     RetryExhaustedError,
     SDKError,
     SDKInitializationError,
     SDKTimeoutError,
     TokenRefreshError,
     WebhookValidationError,
+    WorktreeCreationError,
+)
+from .github_auth import (
+    GitHubAuthService,
+    close_github_auth_service,
+    get_github_auth_service,
 )
 from .health import HealthChecker, HealthStatus
 from .http_client import AsyncHTTPClient, close_http_client, get_http_client
@@ -51,12 +58,18 @@ __all__ = [
     "GitHubAPIError",
     "QueueError",
     "RateLimitError",
+    "RepositorySyncError",
     "RetryExhaustedError",
     "SDKError",
     "SDKInitializationError",
     "SDKTimeoutError",
     "TokenRefreshError",
     "WebhookValidationError",
+    "WorktreeCreationError",
+    # GitHub Auth
+    "GitHubAuthService",
+    "get_github_auth_service",
+    "close_github_auth_service",
     # Health
     "HealthChecker",
     "HealthStatus",

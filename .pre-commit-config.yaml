@@ -31,7 +31,6 @@ repos:
     hooks:
       - id: flake8
         additional_dependencies: [flake8-bugbear]
-        args: ["--max-line-length=88", "--extend-ignore=E203,E501,C901,F541"]
         files: ^(services|shared|subagents|hooks|plugins|tests)/
 
   - repo: https://github.com/pre-commit/mirrors-mypy

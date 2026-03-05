@@ -18,7 +18,6 @@ from shared.config import get_worker_config
 from shared.health import HealthChecker
 
 # Import modularized components
-from .auth import GitHubTokenManager
 from .processors import RequestProcessor
 
 # Load configuration first with detailed error reporting
@@ -62,9 +61,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("claude_agent_sdk").setLevel(
-    getattr(logging, config.log_level, logging.INFO)
-)
 
 logger.info(f"Logging configured at {config.log_level} level")
 logger.info(f"Configuration loaded: GitHub App ID={config.github.github_app_id}")
@@ -167,8 +163,10 @@ async def main():
     logger.info("Job queue initialized")
 
     try:
-        # Initialize token manager with config
-        token_manager = GitHubTokenManager(
+        # Initialize shared GitHub auth service
+        from shared import GitHubAuthService
+
+        token_manager = GitHubAuthService(
             app_id=config.github.github_app_id,
             private_key=config.github.github_private_key,
             installation_id=config.github.github_installation_id,
@@ -204,6 +202,10 @@ async def main():
                 user = message.get("user", "unknown")
                 auto_review = message.get("auto_review", False)
                 auto_triage = message.get("auto_triage", False)
+                ref = message.get("ref")  # Optional ref from webhook
+
+                logger.info(f"Received message with ref: {ref}")
+                logger.info(f"Message keys: {list(message.keys())}")
 
                 if not all([repo, issue_number, command]):
                     logger.error(f"Invalid message format: {message}")
@@ -223,6 +225,7 @@ async def main():
                     user,
                     auto_review,
                     auto_triage,
+                    ref,
                 )
 
                 # Record successful processing

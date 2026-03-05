@@ -1,6 +1,6 @@
 [flake8]
 max-line-length = 88
-extend-ignore = E203, E266, E501, W503, C901, F824, E402
+extend-ignore = E203, E266, E501, W503, C901, F824
 exclude =
     .git,
     __pycache__,
@@ -18,3 +18,5 @@ per-file-ignores =
     __init__.py:F401
     services/agent_worker/worker.py:E402
     services/webhook/main.py:E402
+    services/sandbox_executor/executor.py:E402
+    services/repo_sync/sync_worker.py:E402

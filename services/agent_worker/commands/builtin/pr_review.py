@@ -15,10 +15,12 @@ class PRReviewCommand(Command):
 
     async def build_prompt(self, context: CommandContext) -> CommandResult:
         """Build PR review prompt."""
+        # Extract any additional arguments after the command name
+        command_parts = context.command_text.strip().split(maxsplit=1)
+        additional_args = command_parts[1] if len(command_parts) > 1 else "all"
+
         # Use plugin command for comprehensive review
-        prompt = (
-            f"/pr-review-toolkit:review-pr {context.repo} {context.issue_number} all"
-        )
+        prompt = f"/pr-review-toolkit:review-pr {context.repo} {context.issue_number} {additional_args}"
 
         return CommandResult(
             prompt=prompt,

@@ -2,6 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import sys
+from pathlib import Path
+
+# Add parent directory to path for shared imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -12,6 +17,7 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
+from shared import SDKError, SDKTimeoutError
 from subagents import AGENTS
 
 logger = logging.getLogger(__name__)
@@ -53,7 +59,7 @@ def setup_langfuse_hooks() -> dict:
             )
 
             try:
-                stdout, stderr = await asyncio.wait_for(
+                _stdout, stderr = await asyncio.wait_for(
                     process.communicate(input=hook_payload.encode()), timeout=30.0
                 )
                 if process.returncode != 0:
@@ -118,7 +124,7 @@ async def execute_sandbox_request(
 
     # Sandbox container expects plugins mapped to /app/plugins
     options = ClaudeAgentOptions(
-        allowed_tools=["Task", "mcp__github__*"],
+        allowed_tools=["Task", "Bash", "mcp__github__*"],
         permission_mode="acceptEdits",
         mcp_servers=mcp_servers,  # type: ignore[arg-type]
         agents=AGENTS,
@@ -146,15 +152,15 @@ async def execute_sandbox_request(
                         break
 
     except TimeoutError as e:
-        raise Exception(
+        raise SDKTimeoutError(
             "Claude Agent SDK execution timed out after 30 minutes in sandbox"
         ) from e
     except Exception as e:
-        raise Exception(f"Failed to execute Claude Agent SDK in sandbox: {e}") from e
+        raise SDKError(f"Failed to execute Claude Agent SDK in sandbox: {e}") from e
 
     response = "\n".join(response_parts)
     if not response or not response.strip():
-        raise Exception("Claude Agent SDK returned empty response in sandbox")
+        raise SDKError("Claude Agent SDK returned empty response in sandbox")
 
     logger.info("Sandbox SDK completed successfully")
     return response

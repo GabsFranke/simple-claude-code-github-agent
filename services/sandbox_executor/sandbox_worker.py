@@ -8,6 +8,7 @@ import shutil
 import signal
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -25,7 +26,13 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from shared import JobQueue
+from shared import (
+    JobQueue,
+    RepositorySyncError,
+    SDKError,
+    SDKTimeoutError,
+    WorktreeCreationError,
+)
 from subagents import AGENTS
 
 # Configure logging
@@ -34,6 +41,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Configure Claude Agent SDK logger to match our log level
+logging.getLogger("claude_agent_sdk").setLevel(os.getenv("LOG_LEVEL", "INFO"))
 
 # Global state
 shutdown_event = asyncio.Event()
@@ -122,6 +132,79 @@ def setup_langfuse_hooks() -> dict:
     }
 
 
+async def execute_git_command(cmd: str, cwd: str | None = None) -> tuple[int, str, str]:
+    """Execute a git command asynchronously."""
+    process = await asyncio.create_subprocess_shell(
+        cmd,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    return process.returncode or 0, stdout.decode().strip(), stderr.decode().strip()
+
+
+async def ensure_repo_synced(
+    repo: str, ref: str, redis_client, github_token: str
+) -> str:
+    """Ensure bare repo is synced by waiting for completion event via pub/sub.
+
+    This function subscribes to Redis pub/sub and waits for the repo sync worker
+    to publish a completion event. No polling, no arbitrary timeouts.
+    """
+    complete_key = f"agent:sync:complete:{repo}:{ref}"
+    cache_base = "/var/cache/repos"
+    repo_dir = os.path.join(cache_base, f"{repo}.git")
+
+    # First check if already synced (fast path)
+    is_complete = await redis_client.get(complete_key)
+    if is_complete:
+        logger.info(f"Repo {repo} already synced (cached)")
+        return repo_dir
+
+    # Subscribe to completion events
+    completion_channel = "agent:sync:events"
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(completion_channel)
+
+    logger.info(f"Waiting for sync completion event for {repo}...")
+
+    try:
+        # Wait for completion event with reasonable timeout (5 minutes for large repos)
+        timeout = 300  # 5 minutes
+        start_time = asyncio.get_event_loop().time()
+
+        async for message in pubsub.listen():
+            # Check timeout
+            if asyncio.get_event_loop().time() - start_time > timeout:
+                raise RepositorySyncError(
+                    f"Sync timeout for {repo} after {timeout}s - repo sync worker may be down"
+                )
+
+            if message["type"] == "message":
+                try:
+                    event = json.loads(message["data"])
+                    if event.get("repo") == repo and event.get("ref") == ref:
+                        if event.get("status") == "complete":
+                            logger.info(f"Received sync completion event for {repo}")
+                            return repo_dir
+                        elif event.get("status") == "error":
+                            raise RepositorySyncError(
+                                f"Repo sync failed for {repo}: {event.get('error', 'unknown error')}"
+                            )
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON in sync event: {message['data']}")
+                    continue
+
+        # If we exit the loop without returning, something went wrong
+        raise RepositorySyncError(
+            f"Sync event stream ended unexpectedly for {repo} - no completion event received"
+        )
+    finally:
+        await pubsub.unsubscribe(completion_channel)
+        await pubsub.close()
+
+
 async def execute_in_workspace(workspace: str, job_data: dict) -> str:
     """Execute Claude Agent SDK in isolated workspace.
 
@@ -131,6 +214,10 @@ async def execute_in_workspace(workspace: str, job_data: dict) -> str:
 
     Returns:
         Agent response text
+
+    Raises:
+        SDKTimeoutError: If execution exceeds timeout
+        SDKError: If SDK execution fails
     """
     original_cwd = os.getcwd()
 
@@ -157,7 +244,16 @@ async def execute_in_workspace(workspace: str, job_data: dict) -> str:
 
         # Build Claude Agent options
         options = ClaudeAgentOptions(
-            allowed_tools=["Task", "mcp__github__*"],
+            allowed_tools=[
+                "Task",
+                "Bash",
+                "Read",
+                "Write",
+                "Edit",
+                "List",
+                "Search",
+                "mcp__github__*",
+            ],
             permission_mode="acceptEdits",
             mcp_servers=mcp_servers,  # type: ignore[arg-type]
             agents=AGENTS,
@@ -203,15 +299,17 @@ async def execute_in_workspace(workspace: str, job_data: dict) -> str:
         response = "\n".join(response_parts)
 
         if not response or not response.strip():
-            raise Exception("Claude Agent SDK returned empty response")
+            raise SDKError("Claude Agent SDK returned empty response")
 
         logger.info("SDK execution completed successfully")
         return response
 
     except TimeoutError as e:
-        raise Exception("Claude Agent SDK execution timed out after 30 minutes") from e
+        raise SDKTimeoutError(
+            "Claude Agent SDK execution timed out after 30 minutes"
+        ) from e
     except Exception as e:
-        raise Exception(f"Failed to execute Claude Agent SDK: {e}") from e
+        raise SDKError(f"Failed to execute Claude Agent SDK: {e}") from e
     finally:
         # Always restore original working directory
         os.chdir(original_cwd)
@@ -226,6 +324,7 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
         job_data: Job data dictionary
     """
     workspace = None
+    repo_dir = None
 
     try:
         # Validate job_id format for security (prevent directory traversal)
@@ -245,13 +344,101 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
             )
             return
 
+        # Ensure repo is synced and setup worktree
+        repo = job_data["repo"]
+        ref = job_data.get("ref", "main")
+        logger.info(f"Job data keys: {list(job_data.keys())}")
+        logger.info(f"Job data ref value: {job_data.get('ref', 'NOT_FOUND')}")
+        logger.info(f"Setting up worktree for {repo} (ref {ref})")
+
+        repo_dir = await ensure_repo_synced(
+            repo, ref, job_queue.redis, job_data["github_token"]
+        )
+
         # Create isolated workspace in tmpfs mount for automatic cleanup
         # /tmp is intentional - mounted as tmpfs in Docker for security
-        workspace = tempfile.mkdtemp(
+        workspace_base = tempfile.mkdtemp(
             prefix=f"job_{job_id[:8]}_",
             dir="/tmp",  # nosec B108
         )
+        os.rmdir(workspace_base)  # git worktree add needs it to not exist
+        workspace = workspace_base
         logger.info(f"Created workspace for job {job_id}: {workspace}")
+
+        # Create worktree with unique branch name
+        # Handle different ref formats:
+        # - refs/heads/main -> heads/main (regular branch)
+        # - refs/pull/30/head -> refs/pull/30/head (PR ref, keep as-is)
+        # - refs/tags/v1.0 -> refs/tags/v1.0 (tag, keep as-is)
+        if ref.startswith("refs/pull/"):
+            # PR refs need to be kept as-is
+            bare_ref = ref
+        elif ref.startswith("refs/tags/"):
+            # Tag refs need to be kept as-is
+            bare_ref = ref
+        else:
+            # Regular branch refs: convert refs/heads/main -> heads/main
+            base_ref = ref.replace("refs/", "") if ref.startswith("refs/") else ref
+            bare_ref = (
+                base_ref if base_ref.startswith("heads/") else f"heads/{base_ref}"
+            )
+
+        # Generate unique branch name with timestamp to avoid collisions
+        timestamp = int(time.time() * 1000) % 1000000  # Last 6 digits of milliseconds
+        branch_name = f"job-{job_id[:8]}-{timestamp}"
+
+        # First, try to create worktree with new branch from the specified ref
+        wt_cmd = f"git --git-dir={repo_dir} worktree add -b {branch_name} {workspace} {bare_ref}"
+        code, _out, err = await execute_git_command(wt_cmd)
+
+        if code != 0:
+            logger.warning(
+                f"Worktree ref {bare_ref} failed: {err}. Trying to detect default branch..."
+            )
+
+            # List all branches and pick the first one (usually main or master)
+            list_cmd = f"git --git-dir={repo_dir} branch --list"
+            list_code, list_out, list_err = await execute_git_command(list_cmd)
+
+            default_branch = "heads/main"  # Fallback
+            if list_code == 0 and list_out:
+                # Output is like "* main" or "  master", pick first branch
+                branches = [
+                    b.strip().lstrip("* ") for b in list_out.split("\n") if b.strip()
+                ]
+                if branches:
+                    default_branch = f"heads/{branches[0]}"
+                    logger.info(f"Detected default branch: {default_branch}")
+            else:
+                logger.warning(
+                    f"Could not list branches: {list_err}. Using fallback: {default_branch}"
+                )
+
+            # Try with detected default branch
+            wt_cmd_fallback = f"git --git-dir={repo_dir} worktree add -b {branch_name} {workspace} {default_branch}"
+            code, _out, err = await execute_git_command(wt_cmd_fallback)
+            if code != 0:
+                # If still failing, try without creating new branch (detached HEAD)
+                logger.warning(
+                    f"Worktree with new branch failed: {err}. Trying detached HEAD"
+                )
+                wt_cmd_detached = f"git --git-dir={repo_dir} worktree add --detach {workspace} {default_branch}"
+                code, _out, err = await execute_git_command(wt_cmd_detached)
+                if code != 0:
+                    raise WorktreeCreationError(
+                        f"Failed to create worktree after all attempts: {err}"
+                    )
+
+        # Inject git credentials into the workspace
+        # Configure git to use credential helper
+        await execute_git_command("git config credential.helper store", cwd=workspace)
+
+        # Write credentials to home directory where git expects them
+        home_dir = os.path.expanduser("~")
+        os.makedirs(home_dir, exist_ok=True)
+        credentials_file = os.path.join(home_dir, ".git-credentials")
+        with open(credentials_file, "w", encoding="utf-8") as f:
+            f.write(f"https://x-access-token:{job_data['github_token']}@github.com\n")
 
         # Execute in isolated workspace
         response = await execute_in_workspace(workspace, job_data)
@@ -286,10 +473,25 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
         )
 
     finally:
-        # Cleanup workspace
+        # Cleanup credentials
+        try:
+            credentials_file = os.path.join(os.path.expanduser("~"), ".git-credentials")
+            if os.path.exists(credentials_file):
+                os.remove(credentials_file)
+                logger.debug("Cleaned up git credentials")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup credentials: {e}")
+
+        # Cleanup workspace and worktree
         if workspace:
             try:
-                shutil.rmtree(workspace)
+                if repo_dir and os.path.exists(workspace):
+                    # Remove worktree from bare repo tracking
+                    await execute_git_command(
+                        f"git --git-dir={repo_dir} worktree remove --force {workspace}"
+                    )
+                elif os.path.exists(workspace):
+                    shutil.rmtree(workspace)
                 logger.debug(f"Cleaned up workspace: {workspace}")
             except Exception as e:
                 logger.warning(f"Failed to cleanup workspace {workspace}: {e}")
