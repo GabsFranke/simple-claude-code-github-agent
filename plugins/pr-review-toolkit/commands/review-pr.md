@@ -20,7 +20,7 @@ Run a comprehensive pull request review using multiple specialized agents. Agent
    - Extract repository from $ARGUMENTS (e.g., "owner/repo")
    - Extract PR number from $ARGUMENTS
    - Parse optional review aspects (comments, tests, errors, types, code, simplify, all)
-   - Check git status to identify changed files: `git diff --name-only`
+   - Check git status to identify changed files: `git diff main --name-only`
    - Default: Run all applicable reviews
 
 2. **Available Review Aspects:**
@@ -33,7 +33,7 @@ Run a comprehensive pull request review using multiple specialized agents. Agent
    - **all** - Run all applicable reviews (default)
 
 3. **Identify Changed Files**
-   - Run `git diff --name-only` to see modified files in worktree
+   - Run `git diff main --name-only` to see modified files in worktree
    - Agents can read files directly from the working directory
    - Identify file types and what reviews apply
 
@@ -47,18 +47,19 @@ Run a comprehensive pull request review using multiple specialized agents. Agent
    - **If types added/modified**: type-design-analyzer
    - **After passing review**: code-simplifier (polish and refine)
 
-5. **Launch Review Agents**
+5. **Launch Review Agents: tool_name: Agent**
 
-   **Sequential approach** (default):
+   **Parallel approach** (default):
+   - Launch all agents simultaneously
+   - Faster for comprehensive review
+   - Results come back together
+
+   **Sequential approach**:
    - Easier to understand and act on
    - Each report is complete before next
    - Good for interactive review
    - Agents read files directly from worktree
 
-   **Parallel approach** (user can request):
-   - Launch all agents simultaneously
-   - Faster for comprehensive review
-   - Results come back together
 
 6. **Aggregate Results**
 

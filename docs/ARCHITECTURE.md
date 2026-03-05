@@ -181,9 +181,10 @@ git --git-dir={repo_dir} worktree remove --force {workspace}
 
 **Sync Coordination**:
 
-- Waits up to 20 seconds for repo_sync service to complete
-- Falls back to self-sync if repo_sync is slow or unavailable
-- Uses Redis completion signals (`agent:sync:complete:{repo}:{ref}`)
+- Subscribes to Redis pub/sub channel (`agent:sync:events`) for completion notifications
+- Waits asynchronously for repo_sync service to publish completion event (no polling)
+- 5-minute timeout for large repositories (fails job if repo_sync is down)
+- Uses Redis completion signals (`agent:sync:complete:{repo}:{ref}`) for fast-path cache checks
 - Prevents duplicate syncs with Redis locks
 
 ### 5. Claude Agent SDK

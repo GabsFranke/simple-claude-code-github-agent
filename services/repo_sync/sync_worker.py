@@ -1,6 +1,7 @@
 """Background worker solely responsible for syncing and caching bare git repositories."""
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -111,24 +112,67 @@ async def process_sync_request(message: dict, redis_client):
 
             if code != 0:
                 logger.error(f"Failed to clone {repo}. Code: {code}, Err: {err}")
+                # Publish error event
+                completion_channel = "agent:sync:events"
+                error_event = json.dumps(
+                    {
+                        "repo": repo,
+                        "ref": ref,
+                        "status": "error",
+                        "error": f"Clone failed: {err}",
+                    }
+                )
+                await redis_client.publish(completion_channel, error_event)
                 return
         else:
             logger.info(f"Fetching updates for {repo}...")
-            # Fetch all branches and tags into the bare repo
+            # Update remote URL with authentication token for fetch
+            if token:
+                set_url_cmd = f"git --git-dir={repo_dir} remote set-url origin {auth_prefix}github.com/{repo}.git"
+                await execute_git_command(set_url_cmd)
+
+            # Fetch all branches, tags, and PR refs into the bare repo
             # In bare repos, remote branches are stored as refs/heads/* not refs/remotes/origin/*
-            cmd = f"git --git-dir={repo_dir} fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'"
+            # PR refs are stored as refs/pull/*/head
+            cmd = f"git --git-dir={repo_dir} fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' '+refs/pull/*/head:refs/pull/*/head'"
             code, _out, err = await execute_git_command(cmd)
 
             if code != 0:
                 logger.error(f"Failed to fetch {repo}. Code: {code}, Err: {err}")
+                # Publish error event
+                completion_channel = "agent:sync:events"
+                error_event = json.dumps(
+                    {
+                        "repo": repo,
+                        "ref": ref,
+                        "status": "error",
+                        "error": f"Fetch failed: {err}",
+                    }
+                )
+                await redis_client.publish(completion_channel, error_event)
                 return
 
         # Publish completion signal with shorter TTL to avoid Redis bloat
         await redis_client.set(complete_key, "1", ex=300)  # Expires in 5 minutes
+
+        # Publish completion event to pub/sub channel for waiting workers
+        completion_channel = "agent:sync:events"
+        completion_event = json.dumps({"repo": repo, "ref": ref, "status": "complete"})
+        await redis_client.publish(completion_channel, completion_event)
+
         logger.info(f"Successfully synced {repo} (ref {ref}).")
 
     except Exception as e:
         logger.error(f"Error while syncing {repo}: {e}", exc_info=True)
+        # Publish error event
+        try:
+            completion_channel = "agent:sync:events"
+            error_event = json.dumps(
+                {"repo": repo, "ref": ref, "status": "error", "error": str(e)}
+            )
+            await redis_client.publish(completion_channel, error_event)
+        except Exception as pub_error:
+            logger.error(f"Failed to publish error event: {pub_error}")
     finally:
         await lock.release()
 
@@ -147,7 +191,8 @@ async def main():
     await queue._connect()
     redis_client = queue.redis
 
-    asyncio.create_task(cleanup_old_repos())
+    # Track background task for proper cleanup
+    cleanup_task = asyncio.create_task(cleanup_old_repos())
 
     logger.info("Sync worker ready. Waiting for requests...")
 
@@ -162,6 +207,20 @@ async def main():
 
     finally:
         logger.info("Shutting down Repository Sync Worker...")
+
+        # Cancel background task
+        if not cleanup_task.done():
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                logger.info("Cleanup task cancelled")
+
+        # Cleanup global auth service
+        from shared import close_github_auth_service
+
+        await close_github_auth_service()
+
         await queue.close()
 
 

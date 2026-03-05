@@ -173,3 +173,17 @@ async def get_github_auth_service() -> GitHubAuthService:
         await _global_auth_service.__aenter__()
 
     return _global_auth_service
+
+
+async def close_github_auth_service():
+    """Close the global GitHub auth service and cleanup resources.
+
+    This should be called during application shutdown to properly cleanup
+    the HTTP client and other resources.
+    """
+    global _global_auth_service  # pylint: disable=global-statement
+
+    if _global_auth_service is not None:
+        await _global_auth_service.__aexit__(None, None, None)
+        _global_auth_service = None
+        logger.info("Global GitHub auth service closed")

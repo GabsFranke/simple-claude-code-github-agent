@@ -26,7 +26,13 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from shared import JobQueue
+from shared import (
+    JobQueue,
+    RepositorySyncError,
+    SDKError,
+    SDKTimeoutError,
+    WorktreeCreationError,
+)
 from subagents import AGENTS
 
 # Configure logging
@@ -35,6 +41,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Configure Claude Agent SDK logger to match our log level
+logging.getLogger("claude_agent_sdk").setLevel(os.getenv("LOG_LEVEL", "INFO"))
 
 # Global state
 shutdown_event = asyncio.Event()
@@ -138,55 +147,62 @@ async def execute_git_command(cmd: str, cwd: str | None = None) -> tuple[int, st
 async def ensure_repo_synced(
     repo: str, ref: str, redis_client, github_token: str
 ) -> str:
-    """Ensure bare repo is synced, tracking complete flag with fallback to lock + clone."""
+    """Ensure bare repo is synced by waiting for completion event via pub/sub.
+
+    This function subscribes to Redis pub/sub and waits for the repo sync worker
+    to publish a completion event. No polling, no arbitrary timeouts.
+    """
     complete_key = f"agent:sync:complete:{repo}:{ref}"
-    lock_key = f"agent:sync:lock:{repo}"
     cache_base = "/var/cache/repos"
     repo_dir = os.path.join(cache_base, f"{repo}.git")
-    auth_prefix = f"https://x-access-token:{github_token}@"
 
-    # Wait for up to 20 seconds for sync worker (increased from 15)
-    for i in range(20):
-        is_complete = await redis_client.get(complete_key)
-        if is_complete:
-            logger.info(f"Sync completed for {repo} after {i} seconds")
-            return repo_dir
-        await asyncio.sleep(1)
+    # First check if already synced (fast path)
+    is_complete = await redis_client.get(complete_key)
+    if is_complete:
+        logger.info(f"Repo {repo} already synced (cached)")
+        return repo_dir
 
-    logger.warning(
-        f"Sync worker timeout for {repo} after 20s, executing fallback sync..."
-    )
-    os.makedirs(os.path.dirname(repo_dir), exist_ok=True)
+    # Subscribe to completion events
+    completion_channel = "agent:sync:events"
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(completion_channel)
 
-    # Fallback to doing it ourselves
+    logger.info(f"Waiting for sync completion event for {repo}...")
+
     try:
-        lock = redis_client.lock(lock_key, timeout=300)
-        acquired = await lock.acquire(blocking=True, blocking_timeout=10)
-        if not acquired:
-            logger.warning(
-                f"Fallback couldn't acquire lock for {repo}, assuming it's synced"
-            )
-            return repo_dir
+        # Wait for completion event with reasonable timeout (5 minutes for large repos)
+        timeout = 300  # 5 minutes
+        start_time = asyncio.get_event_loop().time()
 
-        try:
-            if not os.path.exists(repo_dir):
-                logger.info(f"Fallback clone for {repo}...")
-                clone_url = f"{auth_prefix}github.com/{repo}.git"
-                cmd = f"git clone --bare {clone_url} {repo_dir}"
-                await execute_git_command(cmd)
-            else:
-                logger.info(f"Fallback fetch for {repo}...")
-                cmd = f"git --git-dir={repo_dir} fetch origin '*:refs/remotes/origin/*'"
-                await execute_git_command(cmd)
+        async for message in pubsub.listen():
+            # Check timeout
+            if asyncio.get_event_loop().time() - start_time > timeout:
+                raise RepositorySyncError(
+                    f"Sync timeout for {repo} after {timeout}s - repo sync worker may be down"
+                )
 
-            await redis_client.set(complete_key, "1", ex=300)  # 5 minutes TTL
-        finally:
-            await lock.release()
+            if message["type"] == "message":
+                try:
+                    event = json.loads(message["data"])
+                    if event.get("repo") == repo and event.get("ref") == ref:
+                        if event.get("status") == "complete":
+                            logger.info(f"Received sync completion event for {repo}")
+                            return repo_dir
+                        elif event.get("status") == "error":
+                            raise RepositorySyncError(
+                                f"Repo sync failed for {repo}: {event.get('error', 'unknown error')}"
+                            )
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON in sync event: {message['data']}")
+                    continue
 
-    except Exception as e:
-        logger.error(f"Fallback sync failed: {e}")
-
-    return repo_dir
+        # If we exit the loop without returning, something went wrong
+        raise RepositorySyncError(
+            f"Sync event stream ended unexpectedly for {repo} - no completion event received"
+        )
+    finally:
+        await pubsub.unsubscribe(completion_channel)
+        await pubsub.close()
 
 
 async def execute_in_workspace(workspace: str, job_data: dict) -> str:
@@ -198,6 +214,10 @@ async def execute_in_workspace(workspace: str, job_data: dict) -> str:
 
     Returns:
         Agent response text
+
+    Raises:
+        SDKTimeoutError: If execution exceeds timeout
+        SDKError: If SDK execution fails
     """
     original_cwd = os.getcwd()
 
@@ -279,15 +299,17 @@ async def execute_in_workspace(workspace: str, job_data: dict) -> str:
         response = "\n".join(response_parts)
 
         if not response or not response.strip():
-            raise Exception("Claude Agent SDK returned empty response")
+            raise SDKError("Claude Agent SDK returned empty response")
 
         logger.info("SDK execution completed successfully")
         return response
 
     except TimeoutError as e:
-        raise Exception("Claude Agent SDK execution timed out after 30 minutes") from e
+        raise SDKTimeoutError(
+            "Claude Agent SDK execution timed out after 30 minutes"
+        ) from e
     except Exception as e:
-        raise Exception(f"Failed to execute Claude Agent SDK: {e}") from e
+        raise SDKError(f"Failed to execute Claude Agent SDK: {e}") from e
     finally:
         # Always restore original working directory
         os.chdir(original_cwd)
@@ -325,6 +347,8 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
         # Ensure repo is synced and setup worktree
         repo = job_data["repo"]
         ref = job_data.get("ref", "main")
+        logger.info(f"Job data keys: {list(job_data.keys())}")
+        logger.info(f"Job data ref value: {job_data.get('ref', 'NOT_FOUND')}")
         logger.info(f"Setting up worktree for {repo} (ref {ref})")
 
         repo_dir = await ensure_repo_synced(
@@ -342,9 +366,22 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
         logger.info(f"Created workspace for job {job_id}: {workspace}")
 
         # Create worktree with unique branch name
-        base_ref = ref.replace("refs/", "") if ref.startswith("refs/") else ref
-        # In bare repos, branches are at refs/heads/* not refs/remotes/origin/*
-        bare_ref = base_ref if base_ref.startswith("heads/") else f"heads/{base_ref}"
+        # Handle different ref formats:
+        # - refs/heads/main -> heads/main (regular branch)
+        # - refs/pull/30/head -> refs/pull/30/head (PR ref, keep as-is)
+        # - refs/tags/v1.0 -> refs/tags/v1.0 (tag, keep as-is)
+        if ref.startswith("refs/pull/"):
+            # PR refs need to be kept as-is
+            bare_ref = ref
+        elif ref.startswith("refs/tags/"):
+            # Tag refs need to be kept as-is
+            bare_ref = ref
+        else:
+            # Regular branch refs: convert refs/heads/main -> heads/main
+            base_ref = ref.replace("refs/", "") if ref.startswith("refs/") else ref
+            bare_ref = (
+                base_ref if base_ref.startswith("heads/") else f"heads/{base_ref}"
+            )
 
         # Generate unique branch name with timestamp to avoid collisions
         timestamp = int(time.time() * 1000) % 1000000  # Last 6 digits of milliseconds
@@ -388,7 +425,7 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
                 wt_cmd_detached = f"git --git-dir={repo_dir} worktree add --detach {workspace} {default_branch}"
                 code, _out, err = await execute_git_command(wt_cmd_detached)
                 if code != 0:
-                    raise Exception(
+                    raise WorktreeCreationError(
                         f"Failed to create worktree after all attempts: {err}"
                     )
 
@@ -399,9 +436,8 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
         # Write credentials to home directory where git expects them
         home_dir = os.path.expanduser("~")
         os.makedirs(home_dir, exist_ok=True)
-        with open(
-            os.path.join(home_dir, ".git-credentials"), "w", encoding="utf-8"
-        ) as f:
+        credentials_file = os.path.join(home_dir, ".git-credentials")
+        with open(credentials_file, "w", encoding="utf-8") as f:
             f.write(f"https://x-access-token:{job_data['github_token']}@github.com\n")
 
         # Execute in isolated workspace
@@ -437,6 +473,15 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
         )
 
     finally:
+        # Cleanup credentials
+        try:
+            credentials_file = os.path.join(os.path.expanduser("~"), ".git-credentials")
+            if os.path.exists(credentials_file):
+                os.remove(credentials_file)
+                logger.debug("Cleaned up git credentials")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup credentials: {e}")
+
         # Cleanup workspace and worktree
         if workspace:
             try:

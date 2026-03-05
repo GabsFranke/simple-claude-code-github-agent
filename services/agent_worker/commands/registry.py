@@ -36,7 +36,8 @@ class CommandRegistry:
 
     def get_command(self, command_text: str) -> Command | None:
         """Get command by name or alias."""
-        cmd = command_text.strip().lower()
+        # Extract first word as command name, rest is arguments
+        cmd = command_text.strip().lower().split()[0] if command_text.strip() else ""
         return self._commands.get(cmd)
 
     def get_auto_trigger(self, event_type: str) -> Command | None:

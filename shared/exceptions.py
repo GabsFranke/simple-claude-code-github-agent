@@ -55,3 +55,11 @@ class SDKTimeoutError(SDKError):
 
 class SDKInitializationError(SDKError):
     """Raised when Claude SDK initialization fails."""
+
+
+class RepositorySyncError(AgentError):
+    """Raised when repository sync operations fail."""
+
+
+class WorktreeCreationError(AgentError):
+    """Raised when git worktree creation fails."""

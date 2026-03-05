@@ -27,11 +27,17 @@ async def handle_comment_created(
         )
         return None
 
+    # Determine ref before building request_data
+    ref = "main"
+    if "pull_request" in data["issue"]:
+        ref = f"refs/pull/{data['issue']['number']}/head"
+
     request_data = {
         "repository": data["repository"]["full_name"],
         "issue_number": data["issue"]["number"],
         "command": command,
         "user": data["comment"]["user"]["login"],
+        "ref": ref,  # Include ref so agent_worker uses the correct one
     }
 
     logger.info("Agent command detected: /agent %s", command)
@@ -41,12 +47,11 @@ async def handle_comment_created(
         request_data["issue_number"],
     )
 
-    ref = "main"
-    if "pull_request" in data["issue"]:
-        ref = f"refs/pull/{request_data['issue_number']}/head"
-
     # Publish sync request - sync worker will use GitHub App credentials
     await sync_queue.publish({"repo": request_data["repository"], "ref": ref})
+
+    logger.info(f"Publishing job with ref: {ref}")
+    logger.info(f"Request data: {request_data}")
     await queue.publish(request_data)
 
     return {"status": "accepted", "message": "Agent is processing your request"}
