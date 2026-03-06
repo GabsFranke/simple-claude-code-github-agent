@@ -75,40 +75,35 @@ claude-code-github-agent/
 ```yaml
 workflows:
   review-pr:
-    name: "PR Review"
     description: "Comprehensive pull request review"
     triggers:
       events:
-        - event_type: "pull_request"
-          action: "opened"
+        - pull_request.opened
       commands:
-        - "/review"
-        - "/pr-review"
-        - "/review-pr"
+        - /review
+        - /pr-review
+        - /review-pr
     prompt:
       template: "/pr-review-toolkit:review-pr {repo} {issue_number}"
       system_context: "review.md"
 
   triage-issue:
-    name: "Issue Triage"
     description: "Analyze and triage issues"
     triggers:
       events:
-        - event_type: "issues"
-          action: "opened"
+        - issues.opened
       commands:
-        - "/triage"
-        - "/triage-issue"
+        - /triage
+        - /triage-issue
     prompt:
       template: "/issue-toolkit:triage-issue {repo} {issue_number}"
       system_context: "triage.md"
 
   generic:
-    name: "Generic Agent"
     description: "Handle generic agent requests"
     triggers:
       commands:
-        - "/agent"
+        - /agent
     prompt:
       template: "{user_query}"
       system_context: "generic.md"

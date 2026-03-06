@@ -3,21 +3,51 @@
 import asyncio
 
 
-async def execute_git_command(cmd: str, cwd: str | None = None) -> tuple[int, str, str]:
+async def execute_git_command(
+    cmd: str | list[str], cwd: str | None = None
+) -> tuple[int, str, str]:
     """Execute a git command asynchronously.
 
     Args:
-        cmd: Git command to execute
+        cmd: Git command to execute (string for backward compatibility, list preferred)
         cwd: Optional working directory
 
     Returns:
         Tuple of (return_code, stdout, stderr)
+
+    Raises:
+        RuntimeError: If git command fails to start or git is not installed
+        ValueError: If command list doesn't start with 'git'
     """
-    process = await asyncio.create_subprocess_shell(
-        cmd,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    # Handle both string (legacy) and list (secure) formats
+    if isinstance(cmd, list):
+        # Validate that command starts with 'git'
+        if not cmd or cmd[0] != "git":
+            raise ValueError(f"Command must start with 'git', got: {cmd}")
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        # Legacy string format - validate it starts with 'git'
+        if not cmd.strip().startswith("git ") and cmd.strip() != "git":
+            raise ValueError(f"Command must start with 'git', got: {cmd}")
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
     stdout, stderr = await process.communicate()
-    return process.returncode or 0, stdout.decode().strip(), stderr.decode().strip()
+
+    # Critical: Check if process failed to start (returncode is None)
+    if process.returncode is None:
+        raise RuntimeError(
+            f"Git command failed to start: {cmd}. "
+            f"Check that git is installed and working directory exists: {cwd}"
+        )
+
+    return process.returncode, stdout.decode().strip(), stderr.decode().strip()

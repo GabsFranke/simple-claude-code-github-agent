@@ -165,9 +165,16 @@ class RequestProcessor:
             logger.error("No workflow_name provided - webhook should filter events")
             return "ignored"
 
+        # Validate workflow exists before triggering sync
+        if workflow_name not in self.workflow_engine.workflows:
+            logger.error(
+                f"Unknown workflow '{workflow_name}' - ignoring request for {repo}"
+            )
+            return "ignored"
+
         logger.info(f"Processing workflow '{workflow_name}' for {repo}")
 
-        # Workflow found - trigger repo sync before processing
+        # Workflow validated - trigger repo sync
         logger.info(f"Triggering sync for {repo} ref {ref or 'main'}")
         from shared import get_queue
 

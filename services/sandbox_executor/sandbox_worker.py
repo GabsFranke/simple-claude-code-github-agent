@@ -408,7 +408,13 @@ async def process_job(job_queue: JobQueue, job_id: str, job_data: dict) -> None:
 
         # Inject git credentials into the workspace
         # Configure git to use credential helper
-        await execute_git_command("git config credential.helper store", cwd=workspace)
+        config_code, _, config_err = await execute_git_command(
+            "git config credential.helper store", cwd=workspace
+        )
+        if config_code != 0:
+            raise WorktreeCreationError(
+                f"Failed to configure git credentials: {config_err}"
+            )
 
         # Write credentials to home directory where git expects them
         home_dir = os.path.expanduser("~")

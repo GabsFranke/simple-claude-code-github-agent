@@ -143,30 +143,54 @@ class TestWorkflowEngine:
 
         assert workflow is None
 
-    def test_build_prompt_simple(self, temp_workflow_file):
+    def test_build_prompt_simple(self, temp_workflow_file, tmp_path):
         """Test building simple prompt without system context."""
-        engine = WorkflowEngine(temp_workflow_file)
+        # Create workflow without system context
+        workflows_yaml = {
+            "workflows": {
+                "simple-workflow": {
+                    "triggers": {"commands": ["/simple"]},
+                    "prompt": {"template": "Triage issue #{issue_number} in {repo}"},
+                    "description": "Simple workflow",
+                }
+            }
+        }
 
-        # Temporarily remove system context
-        engine.workflows["triage-issue"]["prompt"].pop("system_context")
+        workflow_file = tmp_path / "workflows_simple.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        engine = WorkflowEngine(workflow_file)
 
         prompt = engine.build_prompt(
-            workflow_name="triage-issue",
+            workflow_name="simple-workflow",
             repo="owner/repo",
             issue_number=123,
         )
 
         assert prompt == "Triage issue #123 in owner/repo"
 
-    def test_build_prompt_with_user_query(self, temp_workflow_file):
+    def test_build_prompt_with_user_query(self, tmp_path):
         """Test building prompt with user query."""
-        engine = WorkflowEngine(temp_workflow_file)
+        # Create workflow without system context
+        workflows_yaml = {
+            "workflows": {
+                "query-workflow": {
+                    "triggers": {"commands": ["/query"]},
+                    "prompt": {"template": "{user_query}"},
+                    "description": "Query workflow",
+                }
+            }
+        }
 
-        # Remove system context for simpler test
-        engine.workflows["generic"]["prompt"].pop("system_context")
+        workflow_file = tmp_path / "workflows_query.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        engine = WorkflowEngine(workflow_file)
 
         prompt = engine.build_prompt(
-            workflow_name="generic",
+            workflow_name="query-workflow",
             repo="owner/repo",
             issue_number=456,
             user_query="help me fix this bug",
@@ -246,15 +270,27 @@ class TestWorkflowEngine:
                 repo="owner/repo",
             )
 
-    def test_build_prompt_with_kwargs(self, temp_workflow_file):
+    def test_build_prompt_with_kwargs(self, tmp_path):
         """Test building prompt with additional kwargs."""
-        engine = WorkflowEngine(temp_workflow_file)
+        # Create workflow without system context
+        workflows_yaml = {
+            "workflows": {
+                "kwargs-workflow": {
+                    "triggers": {"commands": ["/kwargs"]},
+                    "prompt": {"template": "Triage issue #{issue_number} in {repo}"},
+                    "description": "Kwargs workflow",
+                }
+            }
+        }
 
-        # Remove system context
-        engine.workflows["triage-issue"]["prompt"].pop("system_context")
+        workflow_file = tmp_path / "workflows_kwargs.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        engine = WorkflowEngine(workflow_file)
 
         prompt = engine.build_prompt(
-            workflow_name="triage-issue",
+            workflow_name="kwargs-workflow",
             repo="owner/repo",
             issue_number=999,
             custom_var="custom_value",
@@ -274,16 +310,27 @@ class TestWorkflowEngine:
         assert workflows["triage-issue"] == "Triage an issue"
         assert workflows["generic"] == "Generic agent request"
 
-    def test_list_workflows_no_description(self, temp_workflow_file):
+    def test_list_workflows_no_description(self, tmp_path):
         """Test listing workflows without descriptions."""
-        engine = WorkflowEngine(temp_workflow_file)
+        # Create workflow without description
+        workflows_yaml = {
+            "workflows": {
+                "no-desc-workflow": {
+                    "triggers": {"commands": ["/nodesc"]},
+                    "prompt": {"template": "test"},
+                }
+            }
+        }
 
-        # Remove description
-        engine.workflows["generic"].pop("description")
+        workflow_file = tmp_path / "workflows_nodesc.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        engine = WorkflowEngine(workflow_file)
 
         workflows = engine.list_workflows()
 
-        assert workflows["generic"] == "No description"
+        assert workflows["no-desc-workflow"] == "No description"
 
     def test_multiple_commands_same_workflow(self, temp_workflow_file):
         """Test multiple commands mapping to same workflow."""
@@ -313,15 +360,27 @@ class TestWorkflowEngine:
         assert "test/project" in prompt  # Template uses {repo}
         assert "add labels" in prompt.lower()
 
-    def test_empty_issue_number(self, temp_workflow_file):
+    def test_empty_issue_number(self, tmp_path):
         """Test building prompt with None issue_number."""
-        engine = WorkflowEngine(temp_workflow_file)
+        # Create workflow without system context
+        workflows_yaml = {
+            "workflows": {
+                "empty-issue-workflow": {
+                    "triggers": {"commands": ["/empty"]},
+                    "prompt": {"template": "Triage issue #{issue_number} in {repo}"},
+                    "description": "Empty issue workflow",
+                }
+            }
+        }
 
-        # Remove system context
-        engine.workflows["triage-issue"]["prompt"].pop("system_context")
+        workflow_file = tmp_path / "workflows_empty.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        engine = WorkflowEngine(workflow_file)
 
         prompt = engine.build_prompt(
-            workflow_name="triage-issue",
+            workflow_name="empty-issue-workflow",
             repo="owner/repo",
             issue_number=None,
         )
@@ -361,3 +420,107 @@ class TestWorkflowEngineIntegration:
 
         review_workflow = engine.get_workflow_for_command("/review")
         assert review_workflow is not None
+
+    def test_missing_system_context_file_validation(self, tmp_path):
+        """Test that missing system context files are caught at initialization."""
+        # Create workflow that references non-existent system context file
+        workflows_yaml = {
+            "workflows": {
+                "test-workflow": {
+                    "triggers": {"commands": ["/test"]},
+                    "prompt": {
+                        "template": "test",
+                        "system_context": "nonexistent.md",
+                    },
+                    "description": "Test workflow",
+                }
+            }
+        }
+
+        workflow_file = tmp_path / "workflows.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        # Should raise FileNotFoundError during initialization
+        with pytest.raises(
+            FileNotFoundError, match="references non-existent system context file"
+        ):
+            WorkflowEngine(workflow_file)
+
+    def test_invalid_workflow_name(self, tmp_path):
+        """Test that invalid workflow names are rejected."""
+        workflows_yaml = {
+            "workflows": {
+                "Invalid_Name": {  # Uppercase not allowed
+                    "triggers": {"commands": ["/test"]},
+                    "prompt": {"template": "test"},
+                    "description": "Test",
+                }
+            }
+        }
+
+        workflow_file = tmp_path / "workflows.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        with pytest.raises(ValueError, match="Invalid workflow name"):
+            WorkflowEngine(workflow_file)
+
+    def test_reserved_workflow_name(self, tmp_path):
+        """Test that reserved workflow names are rejected."""
+        workflows_yaml = {
+            "workflows": {
+                "test": {  # Reserved name
+                    "triggers": {"commands": ["/test"]},
+                    "prompt": {"template": "test"},
+                    "description": "Test",
+                }
+            }
+        }
+
+        workflow_file = tmp_path / "workflows.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        with pytest.raises(ValueError, match="reserved"):
+            WorkflowEngine(workflow_file)
+
+    def test_invalid_template_placeholder(self, tmp_path):
+        """Test that invalid template placeholders are caught."""
+        workflows_yaml = {
+            "workflows": {
+                "test-workflow": {
+                    "triggers": {"commands": ["/test"]},
+                    "prompt": {
+                        "template": "test {invalid_placeholder}",  # Unknown placeholder
+                    },
+                    "description": "Test",
+                }
+            }
+        }
+
+        workflow_file = tmp_path / "workflows.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        with pytest.raises(ValueError, match="unknown placeholders"):
+            WorkflowEngine(workflow_file)
+
+    def test_empty_template(self, tmp_path):
+        """Test that empty templates are rejected."""
+        workflows_yaml = {
+            "workflows": {
+                "test-workflow": {
+                    "triggers": {"commands": ["/test"]},
+                    "prompt": {"template": ""},  # Empty template
+                    "description": "Test",
+                }
+            }
+        }
+
+        workflow_file = tmp_path / "workflows.yaml"
+        with open(workflow_file, "w", encoding="utf-8") as f:
+            yaml.dump(workflows_yaml, f)
+
+        with pytest.raises(ValueError, match="empty template"):
+            WorkflowEngine(workflow_file)

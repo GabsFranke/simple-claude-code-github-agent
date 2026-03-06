@@ -112,11 +112,35 @@ async def webhook(request: Request):
             body = data.get("comment", {}).get("body", "")
             issue_number = data.get("issue", {}).get("number")
 
+            # Validate issue_number exists
+            if issue_number is None:
+                logger.warning("Issue comment event missing issue number")
+                return {
+                    "status": "error",
+                    "message": "Invalid issue comment: missing issue number",
+                }
+
             # Parse command from comment
             match = re.match(r"^(/\S+)\s*(.*)", body.strip())
             if match:
                 command = match.group(1)
                 user_query = match.group(2).strip()
+
+                # Validate command format
+                if len(command) > 50:
+                    logger.warning(f"Command too long: {command[:50]}...")
+                    return {
+                        "status": "error",
+                        "message": "Command is too long (max 50 characters)",
+                    }
+
+                if not re.match(r"^/[a-z0-9\-]+$", command):
+                    logger.warning(f"Invalid command format: {command}")  # type: ignore[unreachable]
+                    return {
+                        "status": "error",
+                        "message": "Invalid command format. Use lowercase letters, numbers, and hyphens only.",
+                    }
+
                 event_data["command"] = command
 
                 # Determine ref for PRs
@@ -135,11 +159,23 @@ async def webhook(request: Request):
         elif event_type == "pull_request":
             # For PR events, extract PR number
             issue_number = data.get("pull_request", {}).get("number")
+            if issue_number is None:
+                logger.warning("Pull request event missing PR number")
+                return {
+                    "status": "error",
+                    "message": "Invalid pull request: missing PR number",
+                }
             ref = f"refs/pull/{issue_number}/head"
             logger.info("Event %s.%s for issue #%s", event_type, action, issue_number)
         elif event_type == "issues":
             # For issue events, extract issue number
             issue_number = data.get("issue", {}).get("number")
+            if issue_number is None:
+                logger.warning("Issue event missing issue number")
+                return {
+                    "status": "error",
+                    "message": "Invalid issue: missing issue number",
+                }
             logger.info("Event %s.%s for issue #%s", event_type, action, issue_number)
 
         # Check if we have a workflow configured for this event/command

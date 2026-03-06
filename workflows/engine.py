@@ -46,6 +46,107 @@ class WorkflowsConfig(BaseModel):
 class WorkflowEngine:
     """Loads workflows from YAML and routes events/commands to prompts."""
 
+    def _validate_workflow_names(self) -> None:
+        """Validate workflow names follow naming conventions.
+
+        Raises:
+            ValueError: If workflow name is invalid
+        """
+        import re
+
+        for name in self.workflows.keys():
+            # Check for valid characters (lowercase, numbers, hyphens)
+            if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+                raise ValueError(
+                    f"Invalid workflow name '{name}'. "
+                    "Workflow names must be lowercase with hyphens (e.g., 'review-pr', 'fix-ci')"
+                )
+
+            # Check length
+            if len(name) > 50:
+                raise ValueError(
+                    f"Workflow name '{name}' is too long (max 50 characters)"
+                )
+
+            # Check for reserved names
+            reserved = ["test", "debug", "admin", "system"]
+            if name in reserved:
+                raise ValueError(
+                    f"Workflow name '{name}' is reserved. Please choose a different name."
+                )
+
+    def _validate_system_context_files(self) -> None:
+        """Validate that all referenced system context files exist.
+
+        Raises:
+            FileNotFoundError: If a referenced .md file doesn't exist
+        """
+        prompts_dir = Path(__file__).parent.parent / "prompts"
+        for name, workflow in self.workflows.items():
+            system_context = workflow.prompt.system_context
+            if system_context and system_context.endswith(".md"):
+                context_file = prompts_dir / system_context
+                if not context_file.exists():
+                    raise FileNotFoundError(
+                        f"Workflow '{name}' references non-existent system context file: {context_file}"
+                    )
+
+    def _validate_templates(self) -> None:
+        """Validate that all workflow templates are valid.
+
+        Raises:
+            ValueError: If template has invalid placeholders or syntax
+        """
+        valid_placeholders = {"repo", "issue_number", "user_query"}
+
+        for name, workflow in self.workflows.items():
+            template = workflow.prompt.template
+
+            if not template:
+                raise ValueError(f"Workflow '{name}' has empty template")
+
+            # Parse template to find all placeholders
+            try:
+                field_names = [
+                    field_name
+                    for _, field_name, _, _ in string.Formatter().parse(template)
+                    if field_name is not None
+                ]
+            except (ValueError, KeyError) as e:
+                raise ValueError(
+                    f"Workflow '{name}' has invalid template syntax: {e}"
+                ) from e
+
+            # Check for unknown placeholders
+            unknown = set(field_names) - valid_placeholders
+            if unknown:
+                raise ValueError(
+                    f"Workflow '{name}' template uses unknown placeholders: {unknown}. "
+                    f"Valid placeholders are: {valid_placeholders}"
+                )
+
+            # Validate system context template if it's inline
+            system_context = workflow.prompt.system_context
+            if system_context and not system_context.endswith(".md"):
+                # It's inline context, validate it too
+                try:
+                    context_fields = [
+                        field_name
+                        for _, field_name, _, _ in string.Formatter().parse(
+                            system_context
+                        )
+                        if field_name is not None
+                    ]
+                    unknown_context = set(context_fields) - valid_placeholders
+                    if unknown_context:
+                        raise ValueError(
+                            f"Workflow '{name}' system_context uses unknown placeholders: {unknown_context}"
+                        )
+                except (ValueError, KeyError) as e:
+                    raise ValueError(
+                        f"Workflow '{name}' has invalid system_context syntax: {e}"
+                    ) from e
+
     def __init__(self, config_path: str | Path | None = None):
         """Initialize workflow engine from YAML config.
 
@@ -75,25 +176,24 @@ class WorkflowEngine:
                 "See logs for details."
             ) from e
 
-        self.workflows = {
-            name: workflow.model_dump()
-            for name, workflow in validated_config.workflows.items()
-        }
+        # Keep Pydantic models for type safety
+        self.workflows: dict[str, WorkflowConfig] = validated_config.workflows
+
+        # Validate workflow names follow conventions
+        self._validate_workflow_names()
 
         # Build lookup tables for fast routing
         self._event_map: dict[str, str] = {}
         self._command_map: dict[str, str] = {}
 
         for workflow_name, workflow in self.workflows.items():
-            triggers = workflow.get("triggers", {})
-
             # Map events to workflows
-            for event in triggers.get("events", []):
+            for event in workflow.triggers.events:
                 self._event_map[event] = workflow_name
                 logger.debug(f"Mapped event '{event}' -> workflow '{workflow_name}'")
 
             # Map commands to workflows
-            for command in triggers.get("commands", []):
+            for command in workflow.triggers.commands:
                 self._command_map[command] = workflow_name
                 logger.debug(
                     f"Mapped command '{command}' -> workflow '{workflow_name}'"
@@ -102,6 +202,14 @@ class WorkflowEngine:
         logger.info(
             f"Loaded {len(self.workflows)} workflows: {list(self.workflows.keys())}"
         )
+
+        # Validate system context files exist at initialization
+        self._validate_system_context_files()
+        logger.info("All system context files validated")
+
+        # Validate templates at initialization
+        self._validate_templates()
+        logger.info("All workflow templates validated")
 
     def get_workflow_for_event(
         self, event_type: str, action: str | None = None
@@ -162,10 +270,9 @@ class WorkflowEngine:
             raise ValueError(f"Unknown workflow: {workflow_name}")
 
         workflow = self.workflows[workflow_name]
-        prompt_config = workflow["prompt"]
 
         # Validate template placeholders to prevent injection
-        template = prompt_config["template"]
+        template = workflow.prompt.template
         try:
             # Get all field names from template
             field_names = [
@@ -174,11 +281,15 @@ class WorkflowEngine:
                 if field_name is not None
             ]
 
+            # Escape user-provided input to prevent template injection
+            # User query might contain {braces} which could cause issues
+            safe_user_query = user_query.replace("{", "{{").replace("}", "}}")
+
             # Build safe variables dict
             safe_vars = {
                 "repo": repo,
                 "issue_number": issue_number or "",
-                "user_query": user_query,
+                "user_query": safe_user_query,
                 **kwargs,
             }
 
@@ -201,7 +312,7 @@ class WorkflowEngine:
             ) from e
 
         # Add system context if defined
-        system_context = prompt_config.get("system_context")
+        system_context = workflow.prompt.system_context
         if system_context:
             # Check if it's a file reference (ends with .md)
             if system_context.endswith(".md"):
@@ -209,14 +320,36 @@ class WorkflowEngine:
                 try:
                     system_context = context_file.read_text(encoding="utf-8").strip()
                     logger.debug(f"Loaded system context from {context_file}")
-                except FileNotFoundError:
-                    logger.warning(f"System context file not found: {context_file}")
-                    system_context = ""
-                except Exception as e:
+                except FileNotFoundError as e:
+                    # This should not happen due to initialization validation
                     logger.error(
-                        f"Error reading system context file {context_file}: {e}"
+                        f"System context file not found: {context_file}. "
+                        "This should have been caught during initialization."
                     )
-                    system_context = ""
+                    raise FileNotFoundError(
+                        f"System context file missing: {context_file}"
+                    ) from e
+                except PermissionError as e:
+                    logger.error(
+                        f"Permission denied reading system context file: {context_file}"
+                    )
+                    raise PermissionError(
+                        f"Cannot read system context file: {context_file}"
+                    ) from e
+                except UnicodeDecodeError as e:
+                    logger.error(
+                        f"Invalid UTF-8 encoding in system context file: {context_file}"
+                    )
+                    raise ValueError(
+                        f"System context file has invalid encoding: {context_file}"
+                    ) from e
+                except OSError as e:
+                    logger.error(
+                        f"OS error reading system context file {context_file}: {e}"
+                    )
+                    raise OSError(
+                        f"Failed to read system context file: {context_file}"
+                    ) from e
 
             # Fill system context with variables if it's not empty
             if system_context:
@@ -247,6 +380,6 @@ class WorkflowEngine:
             Dict mapping workflow names to descriptions
         """
         return {
-            name: workflow.get("description", "No description")
+            name: workflow.description or "No description"
             for name, workflow in self.workflows.items()
         }

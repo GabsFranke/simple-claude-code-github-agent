@@ -53,10 +53,33 @@ class TestExecuteGitCommand:
 
     @pytest.mark.asyncio
     async def test_return_code_normalization(self):
-        """Test that None return codes are normalized to 0."""
-        # This tests the 'or 0' logic in the function
+        """Test that None return codes raise RuntimeError."""
+        # Successful commands should return 0, never None
         code, stdout, stderr = await execute_git_command("git --version")
 
-        # Successful commands should return 0, never None
         assert code == 0
         assert code is not None
+        assert isinstance(stdout, str)
+        assert isinstance(stderr, str)
+
+    @pytest.mark.asyncio
+    async def test_command_validation_string(self):
+        """Test that non-git commands are rejected (string format)."""
+        with pytest.raises(ValueError, match="Command must start with 'git'"):
+            await execute_git_command("rm -rf /")
+
+    @pytest.mark.asyncio
+    async def test_command_validation_list(self):
+        """Test that non-git commands are rejected (list format)."""
+        with pytest.raises(ValueError, match="Command must start with 'git'"):
+            await execute_git_command(["rm", "-rf", "/"])
+
+    @pytest.mark.asyncio
+    async def test_list_format_command(self):
+        """Test git command execution with list format (secure)."""
+        code, stdout, stderr = await execute_git_command(["git", "--version"])
+
+        assert code == 0
+        assert "git version" in stdout.lower()
+        assert isinstance(stdout, str)
+        assert isinstance(stderr, str)
