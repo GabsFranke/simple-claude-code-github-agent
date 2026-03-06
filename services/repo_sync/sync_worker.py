@@ -103,9 +103,9 @@ async def process_sync_request(message: dict, redis_client):
                 await execute_git_command(set_url_cmd)
 
             # Fetch all branches, tags, and PR refs into the bare repo
-            # In bare repos, remote branches are stored as refs/heads/* not refs/remotes/origin/*
+            # Use refs/remotes/origin/* to avoid conflicts with checked-out worktrees
             # PR refs are stored as refs/pull/*/head
-            cmd = f"git --git-dir={repo_dir} fetch origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' '+refs/pull/*/head:refs/pull/*/head'"
+            cmd = f"git --git-dir={repo_dir} fetch origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' '+refs/pull/*/head:refs/pull/*/head'"
             code, _out, err = await execute_git_command(cmd)
 
             if code != 0:
