@@ -2,16 +2,16 @@
 
 import asyncio
 import logging
-import signal
 import sys
 
 import httpx
 from langfuse import Langfuse
 
 # Import shared utilities
-from shared import JobQueue, MultiRateLimiter, get_queue
-from shared.config import get_worker_config
+from shared import JobQueue, MultiRateLimiter, get_queue, setup_graceful_shutdown
+from shared.config import get_worker_config, handle_config_error
 from shared.health import HealthChecker
+from shared.logging_utils import setup_logging
 
 # Import modularized components
 from .processors import RequestProcessor
@@ -20,48 +20,11 @@ from .processors import RequestProcessor
 try:
     config = get_worker_config()
 except Exception as e:
-    # Setup basic logging for error reporting before config is loaded
-    logging.basicConfig(
-        level=logging.ERROR,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    error_logger = logging.getLogger(__name__)
-
-    error_logger.error(
-        "FATAL: Configuration validation failed. Cannot start worker.",
-        exc_info=True,
-    )
-    error_logger.error(f"Error details: {type(e).__name__}: {e}")
-    error_logger.error(
-        "Please check your .env file and ensure all required environment variables are set correctly."
-    )
-    error_logger.error("See docs/CONFIGURATION.md for configuration requirements.")
-
-    # Also print to stderr for container logs
-    print(f"\n{'='*60}", file=sys.stderr)
-    print("FATAL ERROR: Configuration Validation Failed", file=sys.stderr)
-    print(f"{'='*60}", file=sys.stderr)
-    print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
-    print("\nPlease verify:", file=sys.stderr)
-    print("  1. .env file exists and is readable", file=sys.stderr)
-    print("  2. All required environment variables are set", file=sys.stderr)
-    print("  3. Values are in correct format (URLs, integers, etc.)", file=sys.stderr)
-    print("\nSee docs/CONFIGURATION.md for details.", file=sys.stderr)
-    print(f"{'='*60}\n", file=sys.stderr)
-
-    sys.exit(1)
+    handle_config_error(e, "worker")
 
 # Configure logging
-logging.basicConfig(
-    level=getattr(logging, config.log_level, logging.INFO),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+setup_logging(level=config.log_level, silence_noisy=True)
 logger = logging.getLogger(__name__)
-
-# Silence noisy HTTP debug logs
-logging.getLogger("httpcore").setLevel(logging.INFO)
-logging.getLogger("httpx").setLevel(logging.INFO)
-logging.getLogger("urllib3").setLevel(logging.INFO)
 
 logger.info(f"Logging configured at {config.log_level} level")
 logger.info(f"Configuration loaded: GitHub App ID={config.github.github_app_id}")
@@ -87,18 +50,6 @@ rate_limiters = None
 job_queue = None
 
 
-def handle_shutdown(signum, _frame):
-    """Handle shutdown signals gracefully."""
-    logger.info("Received signal %s, initiating graceful shutdown...", signum)
-    shutdown_event.set()
-
-
-def setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown."""
-    signal.signal(signal.SIGTERM, handle_shutdown)
-    signal.signal(signal.SIGINT, handle_shutdown)
-
-
 async def main():
     """Main worker loop - subscribes to queue and processes messages."""
     global http_client, processor, health_checker, rate_limiters, job_queue  # pylint: disable=global-statement
@@ -106,7 +57,7 @@ async def main():
     logger.info("Starting Claude Agent SDK worker (job queue mode)")
 
     # Setup signal handlers
-    setup_signal_handlers()
+    setup_graceful_shutdown(shutdown_event, logger)
 
     # Initialize HTTP client
     http_client = httpx.AsyncClient(

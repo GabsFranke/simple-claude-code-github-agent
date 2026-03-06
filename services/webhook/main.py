@@ -8,50 +8,18 @@ from fastapi import FastAPI, HTTPException, Request
 from validators import verify_signature
 
 from shared import get_queue
-from shared.config import get_webhook_config
+from shared.config import get_webhook_config, handle_config_error
+from shared.logging_utils import setup_logging
 from workflows import WorkflowEngine
 
 # Load configuration with detailed error reporting
 try:
     config = get_webhook_config()
 except Exception as e:
-    # Setup basic logging for error reporting before config is loaded
-    logging.basicConfig(
-        level=logging.ERROR,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    error_logger = logging.getLogger(__name__)
-
-    error_logger.error(
-        "FATAL: Configuration validation failed. Cannot start webhook service.",
-        exc_info=True,
-    )
-    error_logger.error(f"Error details: {type(e).__name__}: {e}")
-    error_logger.error(
-        "Please check your .env file and ensure all required environment variables are set correctly."
-    )
-    error_logger.error("See docs/CONFIGURATION.md for configuration requirements.")
-
-    # Also print to stderr for container logs
-    print(f"\n{'='*60}", file=sys.stderr)
-    print("FATAL ERROR: Configuration Validation Failed", file=sys.stderr)
-    print(f"{'='*60}", file=sys.stderr)
-    print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
-    print("\nPlease verify:", file=sys.stderr)
-    print("  1. .env file exists and is readable", file=sys.stderr)
-    print("  2. All required environment variables are set", file=sys.stderr)
-    print("  3. Values are in correct format (URLs, integers, etc.)", file=sys.stderr)
-    print("  4. GITHUB_WEBHOOK_SECRET is set correctly", file=sys.stderr)
-    print("\nSee docs/CONFIGURATION.md for details.", file=sys.stderr)
-    print(f"{'='*60}\n", file=sys.stderr)
-
-    sys.exit(1)
+    handle_config_error(e, "webhook service")
 
 # Configure logging
-logging.basicConfig(
-    level=getattr(logging, config.log_level, logging.INFO),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+setup_logging(level=config.log_level)
 logger = logging.getLogger(__name__)
 
 logger.info(f"Logging configured at {config.log_level} level")

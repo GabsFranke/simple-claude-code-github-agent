@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import sys
 import tempfile
 import time
@@ -27,14 +26,14 @@ from shared import (
     SDKError,
     SDKTimeoutError,
     WorktreeCreationError,
+    execute_git_command,
+    setup_graceful_shutdown,
 )
+from shared.logging_utils import setup_logging
 from subagents import AGENTS
 
 # Configure logging
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+setup_logging(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 # Configure Claude Agent SDK logger to match our log level
@@ -42,18 +41,6 @@ logging.getLogger("claude_agent_sdk").setLevel(os.getenv("LOG_LEVEL", "INFO"))
 
 # Global state
 shutdown_event = asyncio.Event()
-
-
-def handle_shutdown(signum, _frame):
-    """Handle shutdown signals gracefully."""
-    logger.info("Received signal %s, initiating graceful shutdown...", signum)
-    shutdown_event.set()
-
-
-def setup_signal_handlers():
-    """Setup signal handlers for graceful shutdown."""
-    signal.signal(signal.SIGTERM, handle_shutdown)
-    signal.signal(signal.SIGINT, handle_shutdown)
 
 
 def setup_langfuse_hooks() -> dict:
@@ -132,18 +119,6 @@ def setup_langfuse_hooks() -> dict:
         "Stop": [HookMatcher(matcher="*", hooks=[langfuse_stop_hook_async])],
         "SubagentStop": [HookMatcher(matcher="*", hooks=[langfuse_stop_hook_async])],
     }
-
-
-async def execute_git_command(cmd: str, cwd: str | None = None) -> tuple[int, str, str]:
-    """Execute a git command asynchronously."""
-    process = await asyncio.create_subprocess_shell(
-        cmd,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
-    return process.returncode or 0, stdout.decode().strip(), stderr.decode().strip()
 
 
 async def ensure_repo_synced(
@@ -504,7 +479,7 @@ async def main():
     logger.info("Starting sandbox worker")
 
     # Setup signal handlers
-    setup_signal_handlers()
+    setup_graceful_shutdown(shutdown_event, logger)
 
     # Initialize job queue
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
