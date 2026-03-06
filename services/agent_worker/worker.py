@@ -210,12 +210,15 @@ async def main():
                 user_query = message.get("user_query", "")
                 user = message.get("user", "unknown")
                 ref = message.get("ref")
+                workflow_name = message.get("workflow_name")
 
-                logger.info(f"Received message with ref: {ref}")
+                logger.info(
+                    f"Received message with ref: {ref}, workflow: {workflow_name}"
+                )
                 logger.info(f"Message keys: {list(message.keys())}")
                 logger.info(f"Event data: {event_data}")
 
-                if not all([repo, event_data]):
+                if not all([repo, event_data, workflow_name]):
                     logger.error(f"Invalid message format: {message}")
                     health_checker.record_error()
                     return
@@ -225,6 +228,7 @@ async def main():
                 assert isinstance(event_data, dict)
                 assert isinstance(user_query, str)
                 assert isinstance(user, str)
+                assert isinstance(workflow_name, str)
 
                 job_id = await processor.process(
                     repo,
@@ -233,6 +237,7 @@ async def main():
                     user_query,
                     user,
                     ref,
+                    workflow_name,
                 )
 
                 # Check if event was ignored

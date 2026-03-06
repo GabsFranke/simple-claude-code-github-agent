@@ -59,6 +59,7 @@ class RequestProcessor:
         user_query: str,
         user: str,
         ref: str | None = None,
+        workflow_name: str | None = None,
     ) -> ProcessResult:
         """Process a single agent request by creating a job.
 
@@ -69,6 +70,7 @@ class RequestProcessor:
             user_query: User-provided query/context
             user: User who triggered the request
             ref: Git ref to use (if None, defaults to main)
+            workflow_name: Workflow name (pre-determined by webhook)
 
         Returns:
             Job ID string if job was created, or "ignored" if no workflow matched
@@ -89,17 +91,25 @@ class RequestProcessor:
                         "event_data": event_data,
                         "user_query": user_query,
                         "user": user,
+                        "workflow_name": workflow_name,
                     },
                     metadata={
                         "repo": repo,
                         "issue_number": issue_number,
                         "user": user,
+                        "workflow_name": workflow_name,
                     },
                 )
 
                 try:
                     job_id = await self._execute(
-                        repo, issue_number, event_data, user_query, user, ref
+                        repo,
+                        issue_number,
+                        event_data,
+                        user_query,
+                        user,
+                        ref,
+                        workflow_name,
                     )
 
                     trace.update(
@@ -123,7 +133,7 @@ class RequestProcessor:
                     self.langfuse.flush()
         else:
             return await self._execute(
-                repo, issue_number, event_data, user_query, user, ref
+                repo, issue_number, event_data, user_query, user, ref, workflow_name
             )
 
     async def _execute(
@@ -134,6 +144,7 @@ class RequestProcessor:
         user_query: str,
         user: str,
         ref: str | None = None,
+        workflow_name: str | None = None,
     ) -> ProcessResult:
         """Create a job for sandbox execution.
 
@@ -144,32 +155,17 @@ class RequestProcessor:
             user_query: User-provided query/context
             user: User who triggered the request
             ref: Git ref to use (if None, defaults to main)
+            workflow_name: Workflow name (pre-determined by webhook)
 
         Returns:
             Job ID string if job was created, or "ignored" if no workflow matched
         """
-        # Route event/command to workflow
-        event_type = event_data.get("event_type", "")
-        action = event_data.get("action", "")
-        command = event_data.get("command")
-
-        workflow_name = None
-        if command:
-            # User command
-            workflow_name = self.workflow_engine.get_workflow_for_command(command)
-            logger.info(f"Command '{command}' -> workflow '{workflow_name}'")
-        elif event_type:
-            # Event trigger
-            workflow_name = self.workflow_engine.get_workflow_for_event(
-                event_type, action
-            )
-            logger.info(f"Event {event_type}.{action} -> workflow '{workflow_name}'")
-
+        # Workflow name should be provided by webhook
         if not workflow_name:
-            logger.info(
-                f"No workflow configured for event={event_type}.{action} command={command} - ignoring"
-            )
+            logger.error("No workflow_name provided - webhook should filter events")
             return "ignored"
+
+        logger.info(f"Processing workflow '{workflow_name}' for {repo}")
 
         # Workflow found - trigger repo sync before processing
         logger.info(f"Triggering sync for {repo} ref {ref or 'main'}")

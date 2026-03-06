@@ -9,6 +9,7 @@ from validators import verify_signature
 
 from shared import get_queue
 from shared.config import get_webhook_config
+from workflows import WorkflowEngine
 
 # Load configuration with detailed error reporting
 try:
@@ -61,6 +62,18 @@ app = FastAPI(title="ClaudeCodeGitHubAgent Webhook Service")
 # Initialize queue
 queue = get_queue()
 sync_queue = get_queue(queue_name="agent:sync:requests")
+
+# Initialize workflow engine for event filtering
+try:
+    workflow_engine = WorkflowEngine()
+    logger.info(
+        f"Loaded {len(workflow_engine.workflows)} workflows for event filtering"
+    )
+except Exception as e:
+    logger.error(f"Failed to load workflow engine: {e}", exc_info=True)
+    print("\nFATAL ERROR: Failed to load workflows.yaml", file=sys.stderr)
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
 
 
 @app.get("/")
@@ -126,6 +139,7 @@ async def webhook(request: Request):
         ref = "main"
 
         # Check if it's a comment with a command
+        command = None
         if event_type == "issue_comment" and action == "created":
             body = data.get("comment", {}).get("body", "")
             issue_number = data.get("issue", {}).get("number")
@@ -160,6 +174,24 @@ async def webhook(request: Request):
             issue_number = data.get("issue", {}).get("number")
             logger.info("Event %s.%s for issue #%s", event_type, action, issue_number)
 
+        # Check if we have a workflow configured for this event/command
+        workflow_name = None
+        if command:
+            workflow_name = workflow_engine.get_workflow_for_command(command)
+            logger.info(f"Command '{command}' -> workflow '{workflow_name}'")
+        elif event_type:
+            workflow_name = workflow_engine.get_workflow_for_event(event_type, action)
+            logger.info(f"Event {event_type}.{action} -> workflow '{workflow_name}'")
+
+        if not workflow_name:
+            logger.info(
+                f"No workflow configured for event={event_type}.{action} command={command} - ignoring"
+            )
+            return {
+                "status": "ignored",
+                "message": "No workflow configured for this event",
+            }
+
         # Get user who triggered this
         user = "unknown"
         if event_type == "issue_comment":
@@ -169,18 +201,20 @@ async def webhook(request: Request):
         elif event_type == "issues":
             user = data.get("issue", {}).get("user", {}).get("login", "unknown")
 
-        # Queue agent job with raw event data (worker will decide if sync is needed)
+        # Queue agent job with event data
         job = {
             "repository": repo,
             "issue_number": issue_number,
-            "event_data": event_data,  # Raw event info for worker to route
+            "event_data": event_data,
             "user_query": user_query,
             "user": user,
             "ref": ref,
+            "workflow_name": workflow_name,  # Pass workflow name to worker
         }
 
         logger.info(
-            "Queueing job: event=%s.%s, issue=%s, query=%s",
+            "Queueing job: workflow=%s, event=%s.%s, issue=%s, query=%s",
+            workflow_name,
             event_type,
             action,
             issue_number,

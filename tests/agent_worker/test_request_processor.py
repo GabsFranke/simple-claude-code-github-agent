@@ -74,8 +74,8 @@ class TestRequestProcessorExecution:
     """Test RequestProcessor execution methods."""
 
     @pytest.mark.asyncio
-    async def test_execute_with_event_trigger(self):
-        """Test executing request with event trigger."""
+    async def test_execute_with_workflow_name(self):
+        """Test executing request with workflow name provided."""
         token_manager = AsyncMock()
         token_manager.get_token = AsyncMock(return_value="test-token")
         http_client = AsyncMock()
@@ -90,7 +90,6 @@ class TestRequestProcessorExecution:
                 mock_get_queue.return_value = mock_sync_queue
 
                 mock_engine = MagicMock()
-                mock_engine.get_workflow_for_event = MagicMock(return_value="review-pr")
                 mock_engine.build_prompt = MagicMock(return_value="Review PR prompt")
                 mock_engine_class.return_value = mock_engine
 
@@ -104,19 +103,17 @@ class TestRequestProcessorExecution:
                     user_query="",
                     user="testuser",
                     ref="main",
+                    workflow_name="review-pr",
                 )
 
                 assert job_id == "job-123"
-                mock_engine.get_workflow_for_event.assert_called_once_with(
-                    "pull_request", "opened"
-                )
                 mock_engine.build_prompt.assert_called_once()
                 job_queue.create_job.assert_called_once()
                 token_manager.get_token.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_execute_with_command_trigger(self):
-        """Test executing request with command trigger."""
+    async def test_execute_with_command_workflow(self):
+        """Test executing request with command workflow."""
         token_manager = AsyncMock()
         token_manager.get_token = AsyncMock(return_value="test-token")
         http_client = AsyncMock()
@@ -131,7 +128,6 @@ class TestRequestProcessorExecution:
                 mock_get_queue.return_value = mock_sync_queue
 
                 mock_engine = MagicMock()
-                mock_engine.get_workflow_for_command = MagicMock(return_value="generic")
                 mock_engine.build_prompt = MagicMock(return_value="Generic prompt")
                 mock_engine_class.return_value = mock_engine
 
@@ -144,10 +140,10 @@ class TestRequestProcessorExecution:
                     event_data={"command": "/agent"},
                     user_query="help me fix this",
                     user="testuser",
+                    workflow_name="generic",
                 )
 
                 assert job_id == "job-456"
-                mock_engine.get_workflow_for_command.assert_called_once_with("/agent")
                 mock_engine.build_prompt.assert_called_once()
 
     @pytest.mark.asyncio
@@ -167,7 +163,6 @@ class TestRequestProcessorExecution:
                 mock_get_queue.return_value = mock_sync_queue
 
                 mock_engine = MagicMock()
-                mock_engine.get_workflow_for_command = MagicMock(return_value="generic")
                 mock_engine.build_prompt = MagicMock(return_value="Test prompt")
                 mock_engine_class.return_value = mock_engine
 
@@ -182,6 +177,7 @@ class TestRequestProcessorExecution:
                     event_data={"command": "/agent"},
                     user_query="test",
                     user="testuser",
+                    workflow_name="generic",
                 )
 
                 assert job_id == "job-789"
@@ -192,8 +188,8 @@ class TestRequestProcessorExecution:
                 assert "# Repository Guidelines" in call_args["prompt"]
 
     @pytest.mark.asyncio
-    async def test_execute_no_workflow_found(self):
-        """Test execution when no workflow matches."""
+    async def test_execute_no_workflow_provided(self):
+        """Test execution when no workflow name is provided."""
         token_manager = AsyncMock()
         http_client = AsyncMock()
         job_queue = AsyncMock()
@@ -202,7 +198,6 @@ class TestRequestProcessorExecution:
             "services.agent_worker.processors.request_processor.WorkflowEngine"
         ) as mock_engine_class:
             mock_engine = MagicMock()
-            mock_engine.get_workflow_for_event = MagicMock(return_value=None)
             mock_engine_class.return_value = mock_engine
 
             processor = RequestProcessor(token_manager, http_client, job_queue)
@@ -213,6 +208,7 @@ class TestRequestProcessorExecution:
                 event_data={"event_type": "unknown", "action": "unknown"},
                 user_query="",
                 user="testuser",
+                workflow_name=None,
             )
 
             assert job_id == "ignored"
@@ -235,7 +231,6 @@ class TestRequestProcessorExecution:
                 mock_get_queue.return_value = mock_sync_queue
 
                 mock_engine = MagicMock()
-                mock_engine.get_workflow_for_command = MagicMock(return_value="generic")
                 mock_engine.build_prompt = MagicMock(return_value="Test prompt")
                 mock_engine_class.return_value = mock_engine
 
@@ -250,6 +245,7 @@ class TestRequestProcessorExecution:
                     event_data={"command": "/agent"},
                     user_query="test",
                     user="testuser",
+                    workflow_name="generic",
                 )
 
                 assert job_id == "job-202"
@@ -280,7 +276,6 @@ class TestRequestProcessorExecution:
                 mock_get_queue.return_value = mock_sync_queue
 
                 mock_engine = MagicMock()
-                mock_engine.get_workflow_for_command = MagicMock(return_value="generic")
                 mock_engine.build_prompt = MagicMock(return_value="Test prompt")
                 mock_engine_class.return_value = mock_engine
 
@@ -295,6 +290,7 @@ class TestRequestProcessorExecution:
                     event_data={"command": "/agent"},
                     user_query="test",
                     user="testuser",
+                    workflow_name="generic",
                 )
 
                 assert job_id == "job-303"
