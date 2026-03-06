@@ -62,6 +62,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Silence noisy HTTP debug logs
+logging.getLogger("httpcore").setLevel(logging.INFO)
+logging.getLogger("httpx").setLevel(logging.INFO)
+logging.getLogger("urllib3").setLevel(logging.INFO)
+
 logger.info(f"Logging configured at {config.log_level} level")
 logger.info(f"Configuration loaded: GitHub App ID={config.github.github_app_id}")
 
@@ -198,35 +203,40 @@ async def main():
             try:
                 repo = message.get("repository")
                 issue_number = message.get("issue_number")
-                command = message.get("command")
+                event_data = message.get("event_data", {})
+                user_query = message.get("user_query", "")
                 user = message.get("user", "unknown")
-                auto_review = message.get("auto_review", False)
-                auto_triage = message.get("auto_triage", False)
-                ref = message.get("ref")  # Optional ref from webhook
+                ref = message.get("ref")
 
                 logger.info(f"Received message with ref: {ref}")
                 logger.info(f"Message keys: {list(message.keys())}")
+                logger.info(f"Event data: {event_data}")
 
-                if not all([repo, issue_number, command]):
+                if not all([repo, event_data]):
                     logger.error(f"Invalid message format: {message}")
                     health_checker.record_error()
                     return
 
                 # Type assertions after validation
                 assert isinstance(repo, str)
-                assert isinstance(issue_number, int)
-                assert isinstance(command, str)
+                assert isinstance(event_data, dict)
+                assert isinstance(user_query, str)
                 assert isinstance(user, str)
 
-                await processor.process(
+                job_id = await processor.process(
                     repo,
                     issue_number,
-                    command,
+                    event_data,
+                    user_query,
                     user,
-                    auto_review,
-                    auto_triage,
                     ref,
                 )
+
+                # Check if event was ignored
+                if job_id == "ignored":
+                    logger.debug("Event ignored, no workflow configured")
+                    health_checker.record_activity()
+                    return
 
                 # Record successful processing
                 health_checker.record_activity()

@@ -1,6 +1,7 @@
 """GitHub webhook receiver."""
 
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -9,12 +10,6 @@ from fastapi import FastAPI, HTTPException, Request
 # Add shared to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from handlers import (
-    handle_comment_created,
-    handle_issue_opened,
-    handle_pr_opened,
-    handle_pr_other_action,
-)
 from validators import verify_signature
 
 from shared import get_queue
@@ -105,14 +100,14 @@ async def webhook(request: Request):
 
         # Parse payload
         data = await request.json()
-        action = data.get("action", "N/A")
+        action = data.get("action", "")
+        repo = data.get("repository", {}).get("full_name")
 
-        logger.info("Received %s event (action: %s)", event_type, action)
+        logger.info("Received %s event (action: %s) for %s", event_type, action, repo)
 
-        # Handle push events for proactive cache warming
+        # Handle push events for proactive cache warming (special case)
         if event_type == "push":
             ref = data.get("ref")
-            repo = data.get("repository", {}).get("full_name")
             logger.info(
                 "Handling push event to %s in %s for proactive cache warming", ref, repo
             )
@@ -121,23 +116,79 @@ async def webhook(request: Request):
                 return {"status": "accepted", "message": "Proactive sync triggered"}
             return {"status": "ignored", "message": "Push event missing repo or ref"}
 
-        # Route to appropriate handler
-        if event_type == "issues" and action == "opened":
-            return await handle_issue_opened(data, queue, sync_queue)
+        # Determine event data and user query
+        event_data = {
+            "event_type": event_type,
+            "action": action,
+        }
+        user_query = ""
+        issue_number = None
+        ref = "main"
 
+        # Check if it's a comment with a command
         if event_type == "issue_comment" and action == "created":
-            result = await handle_comment_created(data, queue, sync_queue)
-            if result:
-                return result
-            # No command found, return ignored
-            return {"status": "ignored", "message": "No /agent command found"}
+            body = data.get("comment", {}).get("body", "")
+            issue_number = data.get("issue", {}).get("number")
 
-        if event_type == "pull_request":
-            if action == "opened":
-                return await handle_pr_opened(data, queue, sync_queue)
-            return handle_pr_other_action(action, data["pull_request"]["number"])
+            # Parse command from comment
+            match = re.match(r"^(/\S+)\s*(.*)", body.strip())
+            if match:
+                command = match.group(1)
+                user_query = match.group(2).strip()
+                event_data["command"] = command
 
-        return {"status": "ignored", "message": "Event not handled"}
+                # Determine ref for PRs
+                if "pull_request" in data.get("issue", {}):
+                    ref = f"refs/pull/{issue_number}/head"
+
+                logger.info(
+                    "Command '%s' on issue #%s with query: %s",
+                    command,
+                    issue_number,
+                    user_query[:50] if user_query else "(none)",
+                )
+            else:
+                logger.debug("Comment does not contain a command")  # type: ignore[unreachable]
+                return {"status": "ignored", "message": "No command found in comment"}
+        elif event_type == "pull_request":
+            # For PR events, extract PR number
+            issue_number = data.get("pull_request", {}).get("number")
+            ref = f"refs/pull/{issue_number}/head"
+            logger.info("Event %s.%s for issue #%s", event_type, action, issue_number)
+        elif event_type == "issues":
+            # For issue events, extract issue number
+            issue_number = data.get("issue", {}).get("number")
+            logger.info("Event %s.%s for issue #%s", event_type, action, issue_number)
+
+        # Get user who triggered this
+        user = "unknown"
+        if event_type == "issue_comment":
+            user = data.get("comment", {}).get("user", {}).get("login", "unknown")
+        elif event_type == "pull_request":
+            user = data.get("pull_request", {}).get("user", {}).get("login", "unknown")
+        elif event_type == "issues":
+            user = data.get("issue", {}).get("user", {}).get("login", "unknown")
+
+        # Queue agent job with raw event data (worker will decide if sync is needed)
+        job = {
+            "repository": repo,
+            "issue_number": issue_number,
+            "event_data": event_data,  # Raw event info for worker to route
+            "user_query": user_query,
+            "user": user,
+            "ref": ref,
+        }
+
+        logger.info(
+            "Queueing job: event=%s.%s, issue=%s, query=%s",
+            event_type,
+            action,
+            issue_number,
+            user_query[:50] if user_query else "(none)",
+        )
+        await queue.publish(job)
+
+        return {"status": "accepted", "message": "Agent is processing your request"}
 
     except HTTPException:
         raise
