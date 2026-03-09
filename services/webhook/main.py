@@ -177,6 +177,46 @@ async def webhook(request: Request):
                     "message": "Invalid issue: missing issue number",
                 }
             logger.info("Event %s.%s for issue #%s", event_type, action, issue_number)
+        elif event_type == "workflow_job" and action == "completed":
+            # For workflow job events, check if it failed
+            conclusion = data.get("workflow_job", {}).get("conclusion")
+            if conclusion != "failure":
+                logger.info(
+                    "Workflow job completed with conclusion '%s' - ignoring",
+                    conclusion,
+                )
+                return {
+                    "status": "ignored",
+                    "message": f"Workflow job conclusion is '{conclusion}', not 'failure'",
+                }
+
+            # Extract workflow run information
+            run_id = data.get("workflow_job", {}).get("run_id")
+            workflow_name_gh = data.get("workflow_job", {}).get("workflow_name")
+            job_name = data.get("workflow_job", {}).get("name")
+
+            if run_id is None:
+                logger.warning("Workflow job event missing run_id")
+                return {
+                    "status": "error",
+                    "message": "Invalid workflow job: missing run_id",
+                }
+
+            # Use run_id as issue_number for routing
+            issue_number = run_id
+
+            logger.info(
+                "Workflow job failed: workflow='%s', job='%s', run_id=%s",
+                workflow_name_gh,
+                job_name,
+                run_id,
+            )
+
+            # Store additional context for CI failure analysis
+            event_data["run_id"] = run_id
+            event_data["workflow_name_gh"] = workflow_name_gh
+            event_data["job_name"] = job_name
+            event_data["conclusion"] = conclusion
 
         # Check if we have a workflow configured for this event/command
         workflow_name = None
