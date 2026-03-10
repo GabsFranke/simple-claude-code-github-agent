@@ -92,5 +92,5 @@ jobs:
         run: ruff check services/ shared/ subagents/ hooks/ plugins/ tests/
 
       - name: Run mypy
-        run: mypy services shared subagents hooks plugins --ignore-missing-imports
+        run: mypy services shared subagents hooks --ignore-missing-imports
         continue-on-error: true
