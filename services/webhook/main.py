@@ -190,6 +190,20 @@ async def webhook(request: Request):
                     "message": f"Workflow job conclusion is '{conclusion}', not 'failure'",
                 }
 
+            # Prevent infinite loops: ignore workflow failures from bot's own PRs
+            # (unless manually triggered via /fix-ci command)
+            sender = data.get("sender", {}).get("login", "")
+            if sender == config.webhook_bot_username:
+                logger.info(
+                    "Ignoring workflow failure from bot's own PR (sender: %s) to prevent infinite loops. "
+                    "Use /fix-ci command to manually trigger fixes.",
+                    sender,
+                )
+                return {
+                    "status": "ignored",
+                    "message": f"Skipping auto-trigger from bot PR to prevent loops (sender: {sender})",
+                }
+
             # Extract workflow run information
             run_id = data.get("workflow_job", {}).get("run_id")
             workflow_name_gh = data.get("workflow_job", {}).get("workflow_name")

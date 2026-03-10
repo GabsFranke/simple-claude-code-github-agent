@@ -28,6 +28,20 @@ Analyze GitHub Actions workflow failures and implement fixes using specialized a
 
 ## Workflow:
 
+### IMPORTANT: GitHub Interactions
+
+**You MUST use GitHub MCP tools for all GitHub operations. The `gh` CLI is NOT available in this environment.**
+
+All GitHub interactions use MCP tools with the `mcp__github__` prefix:
+
+- `mcp__github__list_workflow_run_jobs` - Get job details
+- `mcp__github__download_workflow_run_logs` - Get logs
+- `mcp__github__add_issue_comment` - Post comments
+- `mcp__github__create_branch` - Create branches
+- `mcp__github__create_pull_request` - Create PRs
+
+Do NOT attempt to use `gh` CLI commands. Use the MCP tools listed above.
+
 ### 1. Parse Arguments & Gather Context
 
 Extract from $ARGUMENTS:
@@ -45,16 +59,34 @@ Use GitHub MCP tools to get detailed failure information:
 **Get job details and identify which step failed:**
 
 ```python
-mcp__github__list_workflow_run_jobs(owner, repo, run_id)
-# Returns: jobs array with name, conclusion, steps (each step has name, conclusion, number)
+mcp__github__list_workflow_run_jobs({
+    "owner": "owner-name",  # Extract from repo (before /)
+    "repo": "repo-name",    # Extract from repo (after /)
+    "run_id": 12345678      # From event_data
+})
 ```
+
+Returns:
+
+- jobs: Array of job objects
+  - name: Job name
+  - conclusion: success/failure/cancelled
+  - steps: Array of step objects
+    - name: Step name
+    - conclusion: success/failure
+    - number: Step number
 
 **Download complete logs with error messages:**
 
 ```python
-mcp__github__download_workflow_run_logs(owner, repo, run_id)
-# Returns: Full log output as text with all error messages and stack traces
+mcp__github__download_workflow_run_logs({
+    "owner": "owner-name",
+    "repo": "repo-name",
+    "run_id": 12345678
+})
 ```
+
+Returns: Full log output as text with all error messages and stack traces.
 
 Parse the logs to identify:
 
@@ -121,9 +153,18 @@ git commit -m "fix: resolve CI failure - [brief description]
 
 Fixes workflow run #${run_id}"
 
-# Push to branch
+# Push to current branch (reuses existing branch if you're already on a fix branch)
 git push origin HEAD
 ```
+
+**Branch Strategy:**
+
+- If you're already on a branch you created (e.g., `fix/ci-failure-*`), push to that branch
+- If you're on the main branch or someone else's branch, create a new branch first:
+  ```bash
+  git checkout -b fix/ci-failure-${run_id}
+  git push origin fix/ci-failure-${run_id}
+  ```
 
 ### 6. Post Results to GitHub
 
@@ -131,32 +172,39 @@ Use GitHub MCP to communicate results:
 
 **Option A: Comment on PR**
 
+Use GitHub MCP (NOT gh CLI):
+
 ```python
-mcp__github__add_issue_comment(
-    owner=owner,
-    repo=repo,
-    issue_number=pr_number,
-    body=summary_comment
-)
+mcp__github__add_issue_comment({
+    "owner": owner,
+    "repo": repo,
+    "issue_number": pr_number,
+    "body": summary_comment
+})
 ```
 
-**Option B: Create new PR with fixes**
+**Option B: Create new PR with fixes (only if not already on a fix branch)**
+
+If you created a new branch, open a PR. If you're already on an existing fix branch, skip this step (the PR already exists).
+
+Use GitHub MCP tools (NOT gh CLI):
 
 ```python
-# Create branch
-mcp__github__create_branch(owner, repo, f"fix/ci-failure-{run_id}", base_branch)
+# Check current branch first
+current_branch = bash("git branch --show-current")
 
-# Push commits (already done in step 7)
-
-# Create PR
-mcp__github__create_pull_request(
-    owner=owner,
-    repo=repo,
-    title=f"Fix CI failure from run #{run_id}",
-    body=detailed_description,
-    head=f"fix/ci-failure-{run_id}",
-    base="main"
-)
+# Only create PR if this is a new branch (not already a PR)
+if current_branch.startswith("fix/ci-failure-"):
+    # Check if PR already exists for this branch
+    # If not, create one:
+    mcp__github__create_pull_request({
+        "owner": owner,
+        "repo": repo,
+        "title": f"Fix CI failure from run #{run_id}",
+        "body": detailed_description,
+        "head": current_branch,
+        "base": "main"
+    })
 ```
 
 ### 7. Summary Format
@@ -275,6 +323,7 @@ Auto-detect failure type from logs:
 
 ## Tips:
 
+- **GitHub MCP only**: Use `mcp__github__*` tools, NOT `gh` CLI (not available)
 - **Auto-triggered**: Runs automatically on CI failures
 - **Root cause focus**: Fix underlying issues, not symptoms
 - **Test locally**: Verify fixes before pushing
