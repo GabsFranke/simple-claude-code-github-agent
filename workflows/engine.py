@@ -54,22 +54,8 @@ class TriggersConfig(BaseModel):
 
 
 class ContextProfile(BaseModel):
-    """Context configuration for structural context generation."""
+    """Context configuration for workflow context injection."""
 
-    repomap_budget: int = Field(
-        default=2048, description="Token budget for the repomap"
-    )
-    personalized: bool = Field(
-        default=False,
-        description="Whether to personalize repomap toward mentioned files",
-    )
-    include_test_files: bool = Field(
-        default=True, description="Whether to include test files in personalization"
-    )
-    priority_focus: list[str] = Field(
-        default_factory=list,
-        description="Focus areas for repomap ranking (e.g., ['build_system', 'test_structure'])",
-    )
     thread_history: ThreadHistoryConfig = Field(
         default_factory=lambda: ThreadHistoryConfig(),  # type: ignore[call-arg]
         description="Thread history injection configuration",
@@ -574,7 +560,7 @@ class WorkflowEngine:
             workflow_name: Name of the workflow.
 
         Returns:
-            Dict with context profile settings (repomap_budget, personalized, etc.)
+            Dict with context profile settings (thread_history config).
         """
         if workflow_name not in self.workflows:
             return {}

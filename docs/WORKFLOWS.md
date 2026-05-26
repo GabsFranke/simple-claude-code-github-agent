@@ -21,10 +21,6 @@ my-workflow:
     template: "Do something with {repo} #{issue_number}"
     system_context: "my-context.md"        # optional, filename from prompts/ or inline
   context:
-    repomap_budget: 4096                   # token budget for structural context
-    personalized: true                     # personalize repomap toward changed files
-    include_test_files: true               # include test files in personalization
-    priority_focus: ["build_system"]       # focus areas for repomap ranking
     thread_history:                        # inject issue/PR comment history
       enabled: true                        # default: true
       max_comments: 100                    # default: 100
@@ -39,10 +35,6 @@ my-workflow:
 | `triggers.commands` | At least one of events/commands | `[]` | Slash command triggers |
 | `prompt.template` | Yes | — | Prompt with placeholders (`{repo}`, `{issue_number}`, `{user_query}`) or plugin invocation |
 | `prompt.system_context` | No | `None` | Agent instructions. Filename from `prompts/` or inline string |
-| `context.repomap_budget` | No | `2048` | Token budget for the repomap |
-| `context.personalized` | No | `false` | Personalize repomap toward changed files |
-| `context.include_test_files` | No | `true` | Include test files in personalization |
-| `context.priority_focus` | No | `[]` | Focus areas for repomap ranking (e.g. `build_system`, `test_structure`) |
 | `context.thread_history.enabled` | No | `true` | Whether to inject issue/PR comment history into the agent's context |
 | `context.thread_history.max_comments` | No | `100` | Maximum number of comments to fetch from GitHub |
 | `context.thread_history.include_pr_reviews` | No | `true` | Whether to include PR review comments (inline code comments). Only applies to PRs |
@@ -305,8 +297,6 @@ workflows:
     prompt:
       template: "Analyze {repo} #{issue_number}"
       system_context: "my-context.md"
-    context:
-      repomap_budget: 2048
     streaming:
       enabled: true
 ```

@@ -188,12 +188,80 @@ class SDKOptionsBuilder:
             Self for method chaining
         """
         plugins_dir = os.path.expanduser("~/.claude/plugins")
+        loaded_paths = set()
+
+        # 1. First, check installed_plugins.json for explicit plugin paths (useful for cached/marketplace plugins)
+        installed_plugins_path = os.path.join(plugins_dir, "installed_plugins.json")
+        if os.path.exists(installed_plugins_path):
+            try:
+                with open(installed_plugins_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                plugins_dict = data.get("plugins", {})
+                for full_name, installations in plugins_dict.items():
+                    if not installations or not isinstance(installations, list):
+                        continue
+                    # Get the most recent installation
+                    inst = installations[-1]
+                    install_path = inst.get("installPath")
+                    if install_path:
+                        # Normalize path to relocate to container home if needed
+                        norm_path = install_path.replace("\\", "/")
+                        idx = norm_path.lower().find(".claude/plugins/")
+                        if idx != -1:
+                            suffix = norm_path[idx + len(".claude/plugins/") :]
+                            real_path = os.path.expanduser(
+                                os.path.join("~/.claude/plugins/", suffix)
+                            )
+                        else:
+                            real_path = os.path.expanduser(install_path)
+
+                        if os.path.isdir(real_path) and real_path not in loaded_paths:
+                            self._plugins.append({"type": "local", "path": real_path})
+                            loaded_paths.add(real_path)
+                            loaded_paths.add(os.path.normpath(real_path))
+                            short_name = full_name.split("@")[0]
+                            logger.info(
+                                f"Loading installed plugin: {short_name} from {real_path}"
+                            )
+            except Exception as e:
+                logger.warning(f"Failed to parse installed_plugins.json: {e}")
+
+        # 2. Fallback / Direct check: load other direct subdirectories under ~/.claude/plugins/
         if os.path.exists(plugins_dir):
             for plugin_name in os.listdir(plugins_dir):
+                if plugin_name.startswith(".") or plugin_name == "cache":
+                    continue
                 plugin_path = os.path.join(plugins_dir, plugin_name)
-                if os.path.isdir(plugin_path) and not plugin_name.startswith("."):
-                    self._plugins.append({"type": "local", "path": plugin_path})
-                    logger.info(f"Loading plugin: {plugin_name} from {plugin_path}")
+                if os.path.isdir(plugin_path):
+                    norm_plugin_path = os.path.normpath(plugin_path)
+                    if (
+                        norm_plugin_path not in loaded_paths
+                        and plugin_path not in loaded_paths
+                    ):
+                        # Avoid loading empty/invalid directories that might just be host caches
+                        # A valid plugin should contain commands, skills, agents, or a package.json
+                        has_content = any(
+                            os.path.exists(os.path.join(plugin_path, item))
+                            for item in (
+                                "commands",
+                                "skills",
+                                "agents",
+                                "package.json",
+                                ".claude-plugin",
+                            )
+                        )
+                        if has_content:
+                            self._plugins.append({"type": "local", "path": plugin_path})
+                            loaded_paths.add(plugin_path)
+                            loaded_paths.add(norm_plugin_path)
+                            logger.info(
+                                f"Loading local plugin: {plugin_name} from {plugin_path}"
+                            )
+                        else:
+                            logger.debug(
+                                f"Skipping empty/invalid plugin directory: {plugin_path}"
+                            )
+
         return self
 
     def with_plugin(self, path: str) -> "SDKOptionsBuilder":

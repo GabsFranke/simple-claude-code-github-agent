@@ -9,8 +9,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from repo_setup import RepoSetupEngine
 from shared import (
     IndexingTimeoutError,
@@ -28,10 +26,7 @@ from shared.constants import (
     FALLBACK_CONVERSATION_TTL_HOURS,
     MAX_AUTO_CONTINUES as MAX_AUTO_CONTINUES_CONST,
 )
-from shared.context_builder import (
-    find_priority_focus_files,
-    generate_structural_context,
-)
+from shared.context_builder import generate_structural_context
 from shared.sdk_executor import execute_sdk
 from shared.sdk_factory import SDKOptionsBuilder
 from shared.session_store import SessionStore
@@ -395,59 +390,8 @@ class JobProcessor:
 
     async def _prepare_context(self):
         try:
-            mentioned_files = []
-            context_budget = 4096
-            include_test_files = True
-
-            context_profile = self.job_data.get("context_profile", {})
-            if context_profile:
-                context_budget = context_profile.get(
-                    "repomap_budget", 4096
-                )  # noqa: E501 repomap_budget kept for config compat
-                include_test_files = context_profile.get("include_test_files", True)
-
-            if context_profile.get("personalized", False):
-                github_token = self.job_data.get("github_token")
-                if self.issue_number and github_token:
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            url = f"https://api.github.com/repos/{self.repo}/pulls/{self.issue_number}/files"
-                            headers = {
-                                "Authorization": f"Bearer {github_token}",
-                                "Accept": "application/vnd.github.v3+json",
-                            }
-                            resp = await client.get(url, headers=headers, timeout=10.0)
-                            if resp.status_code == 200:
-                                files = resp.json()
-                                mentioned_files = [
-                                    f["path"] for f in files if "path" in f
-                                ]
-                                logger.info(
-                                    f"Personalizing context toward {len(mentioned_files)} changed files"
-                                )
-                    except Exception as e:
-                        logger.debug(
-                            f"PR file fetch skipped (not a PR or API error): {e}"
-                        )
-
-                priority_focus = context_profile.get("priority_focus", [])
-                if priority_focus:
-                    focus_files = find_priority_focus_files(
-                        Path(self.workspace), priority_focus
-                    )
-                    mentioned_files.extend(focus_files)
-                    if focus_files:
-                        logger.info(
-                            f"Added {len(focus_files)} priority focus files for areas: {priority_focus}"
-                        )
-
             self.file_tree_text = await generate_structural_context(
                 repo_path=Path(self.workspace),
-                repo=self.repo,
-                mentioned_files=mentioned_files,
-                token_budget=context_budget,
-                include_test_files=include_test_files,
-                cache_dir=Path.home() / ".claude",
             )
             logger.info(
                 f"Generated structural context: file_tree={len(self.file_tree_text)} chars"

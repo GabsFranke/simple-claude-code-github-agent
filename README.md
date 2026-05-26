@@ -60,7 +60,7 @@ The agent runs Claude SDK with the full Claude Code feature set. Because `~/.cla
 The agent doesn't explore code blindly. It uses a dedicated **Codebase Tools MCP server** backed by SurrealDB and Gemini to understand codebases structurally and semantically:
 
 - **3-Layer Context**:
-  1. **Structural**: File tree & Aider-style repomaps (tree-sitter, 10 languages), personalized per session.
+  1. **Structural**: File tree injected into the system prompt for orientation. Deep structure (call graph, imports, inheritance) available on-demand via codebase_tools MCP.
   2. **Semantic**: Hybrid search combining text matching (ripgrep) and Gemini embeddings.
   3. **Graph AST**: Code is parsed into Abstract Syntax Trees and stored as graph edges (calls, imports, inherits) in SurrealDB.
 - **Advanced Graph Tools**: Agents can trace execution flows (`trace_flow`) or run BFS impact analysis (`get_impact`) to evaluate the blast radius of a change before writing code.
@@ -213,8 +213,6 @@ workflows:
       commands: [/my-command]
     prompt:
       template: "Analyze {repo} #{issue_number}"
-    context:
-      repomap_budget: 2048
 ```
 
 See [WORKFLOWS.md](docs/WORKFLOWS.md) for the full reference, and [CONFIGURATION.md](docs/CONFIGURATION.md) for environment variables.

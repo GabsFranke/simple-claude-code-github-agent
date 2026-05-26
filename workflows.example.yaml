@@ -23,10 +23,6 @@ workflows:
       template: "/pr-review-toolkit:review-pr {repo} {issue_number}"
       # system_context: "review.md" # Load from prompts/review.md
     description: "Review a pull request"
-    context:
-      repomap_budget: 4096
-      personalized: true
-      include_test_files: true
     conversation:
       persist: true
     streaming:
@@ -47,8 +43,6 @@ workflows:
       system_context: "triage.md" # Load from prompts/triage.md
     description: "Triage an issue"
     context:
-      repomap_budget: 1024
-      personalized: false
       thread_history:
         max_comments: 50
     conversation:
@@ -71,10 +65,6 @@ workflows:
       template: "/ci-failure-toolkit:fix-ci {repo} {issue_number}"
       # system_context: "fix-ci.md"
     description: "Analyze and fix CI/CD failures"
-    context:
-      repomap_budget: 4096
-      personalized: true
-      priority_focus: ["build_system", "test_structure"]
     conversation:
       persist: true
     streaming:
@@ -90,9 +80,6 @@ workflows:
       template: "{user_query}"
       system_context: "generic.md" # Load from prompts/generic.md
     description: "Generic agent request"
-    context:
-      repomap_budget: 4096
-      personalized: false
     conversation:
       persist: true
       auto_continue: true

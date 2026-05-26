@@ -536,9 +536,6 @@ workflows:
     prompt:
       template: "Do something with {repo} #{issue_number}"
       system_context: "my-context.md" # Optional, loaded from prompts/
-    context:
-      repomap_budget: 2048
-      personalized: false
     conversation:
       persist: true
       ttl_hours: 720
