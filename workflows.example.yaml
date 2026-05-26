@@ -81,24 +81,6 @@ workflows:
       enabled: true
     skip_self: true
 
-  test-toolkit:
-    triggers:
-      commands:
-        - /test
-    prompt:
-      template: "/test-toolkit:test {user_query}"
-      # Uses commands/test.md — same layout as pr-review-toolkit and ci-failure-toolkit
-    description: "Run a generic task via test-toolkit plugin to verify tool/skill inheritance"
-    context:
-      repomap_budget: 4096
-      personalized: false
-      thread_history:
-        max_comments: 50
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
 
   generic:
     triggers:
@@ -111,28 +93,6 @@ workflows:
     context:
       repomap_budget: 4096
       personalized: false
-    conversation:
-      persist: true
-      auto_continue: true
-    streaming:
-      enabled: true
-    skip_self: false
-
-  fix-review:
-    triggers:
-      events:
-        - event: pull_request.labeled
-          filters:
-            label.name: ["fix-review", "fix-it", "pr-fix"]
-      commands:
-        - /fix-it
-    prompt:
-      template: "/pr-fix:fix-review {repo} {issue_number}"
-    description: "Implement fixes based on PR review feedback"
-    context:
-      repomap_budget: 4096
-      personalized: true
-      include_test_files: true
     conversation:
       persist: true
       auto_continue: true

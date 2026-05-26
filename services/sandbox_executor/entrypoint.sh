@@ -9,7 +9,7 @@ SKILLS_SRC="/app/skills"
 
 mkdir -p "$CLAUDE_DIR/plugins" "$CLAUDE_DIR/skills" "$CLAUDE_DIR/projects"
 
-if [ -d "$PLUGINS_SRC" ]; then
+if [ "$ENABLE_BUILTIN_PLUGINS" = "true" ] && [ -d "$PLUGINS_SRC" ]; then
     cp -rn "$PLUGINS_SRC"/* "$CLAUDE_DIR/plugins/" 2>/dev/null || true
 fi
 

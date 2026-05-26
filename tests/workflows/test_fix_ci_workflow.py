@@ -13,10 +13,10 @@ class TestFixCIWorkflow:
 
     @pytest.fixture
     def real_workflows_yaml(self):
-        """Load the actual workflows.yaml file."""
-        workflow_path = Path(__file__).parent.parent.parent / "workflows.yaml"
+        """Load the actual workflows.example.yaml file."""
+        workflow_path = Path(__file__).parent.parent.parent / "workflows.example.yaml"
         if not workflow_path.exists():
-            pytest.skip("workflows.yaml not found in project root")
+            pytest.skip("workflows.example.yaml not found in project root")
         return workflow_path
 
     @pytest.fixture
@@ -139,9 +139,9 @@ class TestFixCIWorkflowJobEvent:
 
     def test_workflow_job_event_routing(self):
         """Test that workflow_job.completed routes to fix-ci."""
-        workflow_path = Path(__file__).parent.parent.parent / "workflows.yaml"
+        workflow_path = Path(__file__).parent.parent.parent / "workflows.example.yaml"
         if not workflow_path.exists():
-            pytest.skip("workflows.yaml not found")
+            pytest.skip("workflows.example.yaml not found")
 
         engine = WorkflowEngine(workflow_path)
 
@@ -154,9 +154,9 @@ class TestFixCIWorkflowJobEvent:
 
     def test_workflow_job_without_action(self):
         """Test that workflow_job without action doesn't trigger."""
-        workflow_path = Path(__file__).parent.parent.parent / "workflows.yaml"
+        workflow_path = Path(__file__).parent.parent.parent / "workflows.example.yaml"
         if not workflow_path.exists():
-            pytest.skip("workflows.yaml not found")
+            pytest.skip("workflows.example.yaml not found")
 
         engine = WorkflowEngine(workflow_path)
 
@@ -173,10 +173,10 @@ class TestFixCIPromptGeneration:
 
     @pytest.fixture
     def engine(self):
-        """Create WorkflowEngine with real workflows.yaml."""
-        workflow_path = Path(__file__).parent.parent.parent / "workflows.yaml"
+        """Create WorkflowEngine with real workflows.example.yaml."""
+        workflow_path = Path(__file__).parent.parent.parent / "workflows.example.yaml"
         if not workflow_path.exists():
-            pytest.skip("workflows.yaml not found")
+            pytest.skip("workflows.example.yaml not found")
         return WorkflowEngine(workflow_path)
 
     def test_fix_ci_prompt_with_run_id(self, engine):
@@ -227,9 +227,9 @@ class TestFixCIWorkflowValidation:
 
     def test_fix_ci_triggers_configuration(self):
         """Test that fix-ci has proper triggers configured."""
-        workflow_path = Path(__file__).parent.parent.parent / "workflows.yaml"
+        workflow_path = Path(__file__).parent.parent.parent / "workflows.example.yaml"
         if not workflow_path.exists():
-            pytest.skip("workflows.yaml not found")
+            pytest.skip("workflows.example.yaml not found")
 
         with open(workflow_path, encoding="utf-8") as f:
             workflows_data = yaml.safe_load(f)
@@ -260,9 +260,9 @@ class TestFixCIWorkflowValidation:
 
     def test_fix_ci_prompt_configuration(self):
         """Test that fix-ci prompt is properly configured."""
-        workflow_path = Path(__file__).parent.parent.parent / "workflows.yaml"
+        workflow_path = Path(__file__).parent.parent.parent / "workflows.example.yaml"
         if not workflow_path.exists():
-            pytest.skip("workflows.yaml not found")
+            pytest.skip("workflows.example.yaml not found")
 
         with open(workflow_path, encoding="utf-8") as f:
             workflows_data = yaml.safe_load(f)

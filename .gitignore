@@ -73,9 +73,14 @@ private-key.pem
 # ngrok
 ngrok.yml
 
+.omc
 .claude
 claude-plugins-official/
 plans/
 
 # Repository setup configuration (may contain sensitive commands)
 repo-setup.yaml
+
+# Local workflow configurations
+workflows.yaml
+workflow.yml

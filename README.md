@@ -17,7 +17,7 @@
 An orchestration engine for autonomous AI coding agents. It provides a highly scalable, microservices-based system that connects the Claude SDK to **40+ GitHub webhook events**. By providing persistent memory, secure sandboxing, semantic codebase indexing, and an extensible plugin system, it allows you to run complex, autonomous agentic workflows directly on your own infrastructure. Everything is configured through **YAML workflows** and **plugins**:
 
 ```yaml
-# workflows.yaml — add new behaviors without touching code
+# workflows.yaml — create your own from workflows.example.yaml
 my-workflow:
   triggers:
     events:
@@ -39,7 +39,7 @@ Runs on your infrastructure. Scales horizontally. Full observability via Langfus
 ### Event-Driven Engine
 
 - **40+ GitHub events** — PRs, issues, comments, pushes, CI/CD, discussions, labels, releases, and more
-- **YAML-driven workflows** — Define triggers, commands, filters, and prompts in `workflows.yaml`, no code changes needed
+- **YAML-driven workflows** — Define triggers, commands, filters, and prompts in `workflows.yaml` (start from `workflows.example.yaml`), no code changes needed
 - **Slash commands** — `/review`, `/fix-ci`, `/triage`, `/agent <request>` in any issue or PR comment
 - **Horizontal scaling** — Scale sandbox workers independently: `make up SANDBOX=10`
 
@@ -94,7 +94,7 @@ Go to **GitHub Settings → Developer settings → GitHub Apps → New GitHub Ap
 | Issues        | Read & write |
 | Pull requests | Read & write |
 
-**Subscribe to events:** Choose which events GitHub sends to the webhook. For the built-in workflows, enable: Issue comment, Issues, Pull request, Pull request review, Pull request review comment, Pull request review thread, Push, Workflow job. You can subscribe to more or fewer events at any time — see the [full list of supported events](docs/WORKFLOWS.md#supported-events). The agent only acts on what you enable here and configure in [workflows.yaml](workflows.yaml).
+**Subscribe to events:** Choose which events GitHub sends to the webhook. For the built-in workflows, enable: Issue comment, Issues, Pull request, Pull request review, Pull request review comment, Pull request review thread, Push, Workflow job. You can subscribe to more or fewer events at any time — see the [full list of supported events](docs/WORKFLOWS.md#supported-events). The agent only acts on what you enable here and configure in your [workflows.yaml](workflows.example.yaml) (copy from `workflows.example.yaml`).
 
 After creating: note the **App ID**, generate a **private key** (.pem), install the app on your repos, and note the **Installation ID** from the URL.
 
@@ -104,6 +104,7 @@ After creating: note the **App ID**, generate a **private key** (.pem), install 
 git clone https://github.com/GabsFranke/claude-code-github-agent.git
 cd claude-code-github-agent
 cp .env.example .env               # Edit .env with your credentials
+cp workflows.example.yaml workflows.yaml    # Edit workflows (required)
 cp repo-setup.example.yaml repo-setup.yaml  # Edit Per-repo dependency setup (optional)
 ```
 
@@ -195,7 +196,13 @@ Comment on any issue or PR:
 
 ### Add a Workflow
 
-Edit `workflows.yaml` to define new triggers and behaviors — no code changes needed:
+Copy `workflows.example.yaml` to `workflows.yaml` and customize it — no code changes needed:
+
+```bash
+cp workflows.example.yaml workflows.yaml
+```
+
+Then edit `workflows.yaml` to define your triggers and behaviors:
 
 ```yaml
 workflows:

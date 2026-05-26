@@ -245,7 +245,11 @@ class WorkflowEngine:
             config_path = Path(__file__).parent.parent / "workflows.yaml"
         config_path = Path(config_path)
         if not config_path.exists():
-            raise FileNotFoundError(f"Workflow config not found: {config_path}")
+            example_path = config_path.parent / "workflows.example.yaml"
+            msg = f"Workflow config not found: {config_path}."
+            if example_path.exists():
+                msg += f"\nPlease copy {example_path.name} to {config_path.name} to get started."
+            raise FileNotFoundError(msg)
 
         with open(config_path, encoding="utf-8") as f:
             raw_config = yaml.safe_load(f)
