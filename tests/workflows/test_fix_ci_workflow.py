@@ -56,8 +56,8 @@ class TestFixCIWorkflow:
         assert prompt_config.template is not None
         template = prompt_config.template
 
-        # Should use the ci-failure-toolkit command
-        assert "/ci-failure-toolkit:fix-ci" in template
+        # Should use the oh-my-claudecode autopilot command
+        assert "/oh-my-claudecode:autopilot" in template
         assert "{repo}" in template
         assert "{issue_number}" in template
 
@@ -78,7 +78,7 @@ class TestFixCIWorkflow:
         )
 
         # Should contain the command with repo and run ID
-        assert "/ci-failure-toolkit:fix-ci" in prompt
+        assert "/oh-my-claudecode:autopilot" in prompt
         assert "owner/test-repo" in prompt
         assert "12345" in prompt
         # Should NOT have system context - plugin provides its own
@@ -187,7 +187,7 @@ class TestFixCIPromptGeneration:
             issue_number=67890,  # This would be the run_id
         )
 
-        assert "/ci-failure-toolkit:fix-ci" in prompt
+        assert "/oh-my-claudecode:autopilot" in prompt
         assert "owner/repo" in prompt
         assert "67890" in prompt
         # Plugin provides its own context
@@ -201,7 +201,7 @@ class TestFixCIPromptGeneration:
             issue_number=123,  # This would be the PR number
         )
 
-        assert "/ci-failure-toolkit:fix-ci" in prompt
+        assert "/oh-my-claudecode:autopilot" in prompt
         assert "owner/repo" in prompt
         # Plugin provides its own context
         assert system_context is None
@@ -218,7 +218,7 @@ class TestFixCIPromptGeneration:
         # The prompt should NOT include content from prompts/fix-ci.md
         # The plugin provides its own context
         assert len(prompt) > 0
-        assert "/ci-failure-toolkit:fix-ci" in prompt
+        assert "/oh-my-claudecode:autopilot" in prompt
         assert system_context is None
 
 
@@ -272,7 +272,7 @@ class TestFixCIWorkflowValidation:
 
         # Should have template
         assert "template" in prompt
-        assert "/ci-failure-toolkit:fix-ci" in prompt["template"]
+        assert "/oh-my-claudecode:autopilot" in prompt["template"]
 
         # Should NOT have system_context - plugin provides its own
         assert "system_context" not in prompt or prompt.get("system_context") is None

@@ -1,38 +1,22 @@
-# Workflow definitions for GitHub Agent
+# Workflow definitions for GitHub Agent using Oh My Claude Code (OMC)
 # Each workflow defines:
 # - triggers: What GitHub events or user commands trigger it
 # - prompt: How to build the prompt for Claude Agent SDK
 # - description: Human-readable description
 # - skip_self: Whether to skip events triggered by the bot itself (optional, default: true)
 # - conversation: Persistence settings for multi-turn conversations (optional)
-#   - ttl_hours defaults to 720 (30 days) via shared/constants.py if omitted
 
 workflows:
-  review-pr:
-    triggers:
-      events:
-        - event: pull_request.opened
-        - event: pull_request.labeled
-          filters:
-            label.name: ["review", "pr-review", "review-pr"]
-      commands:
-        - /review
-        - /pr-review
-        - /review-pr
-    prompt:
-      template: "/pr-review-toolkit:review-pr {repo} {issue_number}"
-      # system_context: "review.md" # Load from prompts/review.md
-    description: "Review a pull request"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-
+  # Upgraded Triage Workflow: The Central Orchestrator
   triage-issue:
     triggers:
       events:
         - event: issues.opened
+        - event: pull_request.opened
         - event: issues.labeled
+          filters:
+            label.name: "triage"
+        - event: pull_request.labeled
           filters:
             label.name: "triage"
       commands:
@@ -40,8 +24,8 @@ workflows:
         - /triage-issue
     prompt:
       template: "Triage issue #{issue_number} in {repo}"
-      system_context: "triage.md" # Load from prompts/triage.md
-    description: "Triage an issue"
+      system_context: "triage.md"
+    description: "Central triage orchestrator for issues and pull requests"
     context:
       thread_history:
         max_comments: 50
@@ -50,7 +34,52 @@ workflows:
       auto_continue: true
     streaming:
       enabled: true
+    skip_self: true
 
+  # OMC-native version of review-pr
+  review-pr:
+    triggers:
+      events:
+        - event: pull_request.opened
+        - event: pull_request.labeled
+          filters:
+            label.name: ["review", "pr-review", "review-pr", "omc-review"]
+      commands:
+        - /review
+        - /pr-review
+        - /review-pr
+        - /omc-review
+    prompt:
+      template: "/oh-my-claudecode:team 3:executor Conduct a highly thorough, multi-agent code review of PR #{issue_number} in {repo}. Focus on code quality, security, and performance, and post your review summary and line-by-line comments directly on GitHub."
+    description: "OMC-powered comprehensive multi-agent PR review"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC-native version of fix-review
+  fix-review:
+    triggers:
+      events:
+        - event: pull_request.labeled
+          filters:
+            label.name: ["fix-review", "fix-it", "pr-fix", "omc-implement"]
+      commands:
+        - /fix-it
+        - /fix-review
+        - /omc-implement
+        - /omc-fix-review
+    prompt:
+      template: "/oh-my-claudecode:autopilot Read all recent PR review comments on PR #{issue_number} in {repo}, and autonomously implement all required code modifications. Test and verify the results locally in the isolated sandbox, then commit and push."
+    description: "OMC-powered autonomous implementation of PR review fixes"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC-native version of fix-ci
   fix-ci:
     triggers:
       events:
@@ -61,24 +90,205 @@ workflows:
         - /fix-ci
         - /fix-build
         - /fix-tests
+        - /omc-fix-ci
     prompt:
-      template: "/ci-failure-toolkit:fix-ci {repo} {issue_number}"
-      # system_context: "fix-ci.md"
-    description: "Analyze and fix CI/CD failures"
+      template: "/oh-my-claudecode:autopilot Analyze the CI/CD test failure for job #{issue_number} in {repo}. Fetch the logs, diagnose the root cause, fix the files using specialized agents, verify the fix locally, and commit/push the solution."
+    description: "OMC-powered autonomous fix for CI/CD test failures"
     conversation:
       persist: true
     streaming:
       enabled: true
-    skip_self: true
+    skip_self: false
 
+  # OMC Orchestration Mode: Autopilot
+  omc-autopilot:
+    triggers:
+      events:
+        - event: issues.labeled
+          filters:
+            label.name: "autopilot"
+      commands:
+        - /autopilot
+    prompt:
+      template: "/oh-my-claudecode:autopilot {user_query}"
+    description: "Launch OMC Autopilot to autonomously build a feature or fix a bug in an isolated worktree"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
 
+  # OMC Orchestration Mode: Team Swarm
+  omc-team:
+    triggers:
+      events:
+        - event: pull_request.labeled
+          filters:
+            label.name: "team-swarm"
+      commands:
+        - /team
+    prompt:
+      template: "/oh-my-claudecode:team 3:executor {user_query}"
+    description: "Orchestrate a team of specialized agents to plan, implement, and verify complex requests"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC Orchestration Mode: Ralph
+  omc-ralph:
+    triggers:
+      commands:
+        - /ralph
+    prompt:
+      template: "/oh-my-claudecode:ralph {user_query}"
+    description: "Launch Ralph mode linking Swarm planning and Autopilot execution"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC Orchestration Mode: Ultrawork
+  omc-ultrawork:
+    triggers:
+      commands:
+        - /get-work
+        - /ultrawork
+    prompt:
+      template: "/oh-my-claudecode:ultrawork {user_query}"
+    description: "Continuous focused codebase execution loops"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC Orchestration Mode: Ultra QA
+  omc-ultraqa:
+    triggers:
+      commands:
+        - /ultraqa
+    prompt:
+      template: "/oh-my-claudecode:ultraqa {user_query}"
+    description: "Test-driven verification loops to find and fix bugs"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC Orchestration Mode: Deep Interview
+  omc-deep-interview:
+    triggers:
+      commands:
+        - /interview
+        - /deep-interview
+    prompt:
+      template: "/oh-my-claudecode:deep-interview {user_query}"
+    description: "Socratic interactive alignment session to gather requirements"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC Orchestration Mode: Trace
+  omc-trace:
+    triggers:
+      commands:
+        - /trace
+    prompt:
+      template: "/oh-my-claudecode:trace {user_query}"
+    description: "Analyze and trace codebase dependencies and relationships"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC Orchestration Mode: Deslop
+  omc-deslop:
+    triggers:
+      commands:
+        - /deslop
+        - /slop-cleaner
+    prompt:
+      template: "/oh-my-claudecode:ai-slop-cleaner {user_query}"
+    description: "Refactor codebase to remove slop and align with clean code guidelines"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # OMC Orchestration Mode: Self Improve
+  omc-self-improve:
+    triggers:
+      commands:
+        - /self-improve
+    prompt:
+      template: "/oh-my-claudecode:self-improve {user_query}"
+    description: "Autonomous self-improvement loops for system code quality"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # Git Developer Utility: Release
+  omc-release:
+    triggers:
+      commands:
+        - /release
+        - /omc-release
+    prompt:
+      template: "/oh-my-claudecode:release Generate a beautiful release markdown for {repo}, compile the changelog, and draft/submit the release on GitHub."
+    description: "Autonomously draft changelogs and prepare releases on GitHub"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # Git Developer Utility: Deep Dive Q&A
+  omc-deep-dive:
+    triggers:
+      commands:
+        - /deep-dive
+        - /ask
+    prompt:
+      template: "/oh-my-claudecode:deep-dive {user_query}"
+    description: "Architectural Q&A to answer complex questions about the codebase"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # Git Developer Utility: Verify
+  omc-verify:
+    triggers:
+      commands:
+        - /verify
+    prompt:
+      template: "/oh-my-claudecode:verify Run local verification checks, tests, and lints in the sandbox and post the final verdict."
+    description: "Run comprehensive diagnostic, lint, and test checks locally"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: false
+
+  # Generic prompt execution fallback
   generic:
     triggers:
       commands:
         - /agent
     prompt:
       template: "{user_query}"
-      system_context: "generic.md" # Load from prompts/generic.md
+      system_context: "generic.md"
     description: "Generic agent request"
     conversation:
       persist: true

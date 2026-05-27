@@ -81,7 +81,7 @@ class TestFixReviewWorkflow:
             issue_number=42,
         )
 
-        assert "/pr-fix:fix-review" in prompt
+        assert "/oh-my-claudecode:autopilot" in prompt
         assert "owner/test-repo" in prompt
         assert "42" in prompt
         assert system_context is None
@@ -152,4 +152,4 @@ class TestFixReviewWorkflowValidation:
 
         # Should have template
         assert "template" in prompt
-        assert "/pr-fix:fix-review" in prompt["template"]
+        assert "/oh-my-claudecode:autopilot" in prompt["template"]

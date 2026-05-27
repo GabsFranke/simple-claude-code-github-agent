@@ -120,8 +120,8 @@ class TestSkipSelfFeature:
 
         # Test that real workflows have skip_self configured
         if "review-pr" in engine.workflows:
-            # review-pr should skip self when bot is actor
-            assert engine.should_skip_self("review-pr", "bot-user", "bot-user") is True
+            # review-pr should not skip self to allow trigger-chaining from triage
+            assert engine.should_skip_self("review-pr", "bot-user", "bot-user") is False
             # review-pr should not skip when human is actor
             assert (
                 engine.should_skip_self("review-pr", "human-user", "bot-user") is False
@@ -300,9 +300,8 @@ class TestSkipSelfIntegration:
             should_skip = engine.should_skip_self(
                 workflow_names[0], "bot-user", "bot-user"
             )
-            # CI failures triggered by bot should be skipped by default
-            # (use /fix-ci command to manually trigger)
-            assert should_skip is True
+            # OMC fix-ci workflow has skip_self: false to allow trigger-chaining from triage
+            assert should_skip is False
 
     def test_skip_self_with_command_override(self):
         """Test that commands can override skip_self behavior."""
