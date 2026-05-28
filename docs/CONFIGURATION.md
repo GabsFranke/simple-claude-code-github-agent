@@ -99,21 +99,6 @@ ANTHROPIC_VERTEX_REGION=us-central1
 
 > **Security**: The `.env.example` file and `docker-compose.yml` use default passwords (`changeme`, `clickhouse`, `miniosecret`) for MinIO, ClickHouse, and Langfuse services. **These must be changed for production deployments.**
 
-## Semantic Code Search
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `INDEXING_ENABLED` | `false` | Enable the indexing worker. Note: `docker-compose.yml` may override this to `true` for the indexing_worker service |
-| `GEMINI_API_KEY` | — | Required for Gemini embeddings |
-| `SURREALDB_URL` | `ws://localhost:8000/rpc` | SurrealDB WebSocket URL |
-| `SURREALDB_USER` | `root` | SurrealDB username |
-| `SURREALDB_PASS` | `root` | SurrealDB password |
-| `SURREALDB_NS` | `bot` | SurrealDB namespace |
-| `SURREALDB_DB` | `codebase` | SurrealDB database name |
-| `EMBEDDING_MODEL` | `gemini-embedding-001` | Gemini embedding model |
-| `EMBEDDING_DIMENSION` | `1024` | Output vector dimensionality |
-| `EMBEDDING_BATCH_SIZE` | `20` | Texts per embedding API call |
-
 ## Host Integration
 
 | Variable | Default | Description |

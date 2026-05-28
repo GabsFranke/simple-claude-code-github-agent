@@ -17,6 +17,8 @@ import logging
 import os
 import sys
 
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
 from shared.dlq import enqueue_for_retry, is_transient_error
 from shared.logging_utils import setup_logging
 from shared.queue import RedisQueue
@@ -190,6 +192,14 @@ async def main() -> None:
 
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON in memory request: {e}")
+            except (OSError, RedisTimeoutError) as e:
+                # Redis connection errors — force reconnection so the next
+                # iteration starts from a clean state instead of looping on
+                # a stale connection.
+                logger.warning(f"Redis connection error, reconnecting: {e}")
+                await queue._reconnect()
+                redis_client = queue.redis
+                await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"Error in memory worker loop: {e}", exc_info=True)
                 await asyncio.sleep(5)

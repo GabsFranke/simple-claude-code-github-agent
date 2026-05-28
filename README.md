@@ -57,14 +57,14 @@ The agent runs Claude SDK with the full Claude Code feature set. Because `~/.cla
 
 ### Code Intelligence
 
-The agent doesn't explore code blindly. It uses a dedicated **Codebase Tools MCP server** backed by SurrealDB and Gemini to understand codebases structurally and semantically:
+The agent doesn't explore code blindly. It uses CodeGraph MCP for code intelligence:
 
-- **3-Layer Context**:
-  1. **Structural**: File tree injected into the system prompt for orientation. Deep structure (call graph, imports, inheritance) available on-demand via codebase_tools MCP.
-  2. **Semantic**: Hybrid search combining text matching (ripgrep) and Gemini embeddings.
-  3. **Graph AST**: Code is parsed into Abstract Syntax Trees and stored as graph edges (calls, imports, inherits) in SurrealDB.
-- **Advanced Graph Tools**: Agents can trace execution flows (`trace_flow`) or run BFS impact analysis (`get_impact`) to evaluate the blast radius of a change before writing code.
-- **Incremental Indexing**: A background worker incrementally indexes changed files on every push, ensuring context is instantly available when a webhook triggers.
+- **CodeGraph MCP** — 10+ tools: `codegraph_search`, `codegraph_context`, `codegraph_trace`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_node`, `codegraph_explore`, `codegraph_files`, `codegraph_status`. These use a local SQLite knowledge graph built by tree-sitter.
+
+- **2-Layer Context**:
+  1. **Structural**: File tree injected into the system prompt for orientation.
+  2. **Graph Intelligence**: CodeGraph indexes repos locally into SQLite — call graphs, imports, inheritance. Zero-setup: `codegraph init -i` builds the index, no database cluster or API keys needed.
+- **Optional**: CodeGraph runs as a separate MCP server. If not installed, graph tools are unavailable but all other functionality works fine.
 
 ## Quick Start
 

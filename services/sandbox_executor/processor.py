@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -11,14 +12,12 @@ from typing import Any
 
 from repo_setup import RepoSetupEngine
 from shared import (
-    IndexingTimeoutError,
     JobQueue,
     RepositorySyncError,
     SDKError,
     SDKTimeoutError,
     WorktreeCreationError,
     execute_git_command,
-    wait_for_indexing,
     wait_for_repo_sync,
 )
 from shared.constants import (
@@ -143,24 +142,6 @@ class JobProcessor:
         self.repo_dir = await wait_for_repo_sync(
             self.repo, self.ref, self.job_queue.redis
         )
-
-        # Wait for code indexing to complete so the agent has full
-        # code intelligence (code graph + embeddings + routes) available.
-        # Catch ALL exceptions so a Redis pub/sub issue or missing
-        # channel never kills the job — the agent can still work
-        # without indexed code intelligence.
-        try:
-            await wait_for_indexing(self.repo, self.ref, self.job_queue.redis)
-        except IndexingTimeoutError:
-            logger.warning(
-                f"Indexing wait timed out for {self.repo} "
-                f"- proceeding with degraded code intelligence"
-            )
-        except Exception as e:
-            logger.warning(
-                f"Indexing wait failed for {self.repo}: {e} "
-                f"- proceeding with degraded code intelligence"
-            )
 
         conversation_config = self.job_data.get("conversation_config") or {}
         self.persist_session = conversation_config.get("persist", False)
@@ -434,6 +415,23 @@ class JobProcessor:
         from shared.mcp_json_writer import write_mcp_json
 
         write_mcp_json(worktree_path=self.workspace, repo=self.repo)
+
+        # Initialize CodeGraph index (installed in Dockerfile; graceful fallback
+        # if run outside Docker or binary is missing)
+        try:
+            subprocess.run(
+                ["codegraph", "init", "-i"],
+                cwd=self.workspace,
+                timeout=60,
+                capture_output=True,
+            )
+            logger.info("CodeGraph index initialized for %s", self.workspace)
+        except FileNotFoundError:
+            logger.info("CodeGraph not installed, skipping index build")
+        except subprocess.TimeoutExpired:
+            logger.warning("CodeGraph init timed out for %s", self.workspace)
+        except Exception as e:
+            logger.debug("CodeGraph init skipped: %s", e)
 
     async def _execute_sdk_loop(self):
         model = os.getenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-20250514")

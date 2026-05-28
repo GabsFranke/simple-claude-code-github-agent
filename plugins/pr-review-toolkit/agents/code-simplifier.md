@@ -85,13 +85,13 @@ When invoked for PR review (read-only analysis without modifying files), follow 
 
 ### Phase 1 — Gather diffs (max 2 turns)
 
-1. **Load the `codebase-context` skill** — use the Skill tool to load `/codebase-context` for access to `read_file_summary` and other efficient exploration tools.
+1. **Load the `codebase-context` skill** — use the Skill tool to load `/codebase-context` for access to `codegraph_search`, `codegraph_context`, and other efficient exploration tools.
 2. **Get the PR diff** — use `git diff` for priority files first. Read all priority file diffs in a single parallel batch. These diffs are your primary context — they contain everything you need for simplification analysis.
 3. **Do NOT read full files yet.** Diffs show the changed code in context, which is sufficient for identifying simplification opportunities.
 
 ### Phase 2 — Targeted deep reads (max 1 turn, only if needed)
 
-If a specific diff section is unclear without seeing surrounding code, selectively read only that section of the full file. **Do not re-read entire files you already have diffs for.** Use `read_file_summary` for a quick structural overview instead of full `Read`.
+If a specific diff section is unclear without seeing surrounding code, selectively read only that section of the full file. **Do not re-read entire files you already have diffs for.** Use `codegraph_node` for a quick symbol overview instead of full `Read`.
 
 ### Phase 3 — Analyze and deliver findings (remaining turns)
 

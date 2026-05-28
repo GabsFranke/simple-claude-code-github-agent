@@ -33,8 +33,6 @@ DEFAULT_ALLOWED_ENV_PREFIXES = (
     "REPO_",
     "GITHUB_",
     "MCP_",
-    "SURREALDB_",
-    "GEMINI_",
     "PYTHONPATH",
 )
 _ALLOWED_ENV_PREFIXES: tuple[str, ...] | None = None

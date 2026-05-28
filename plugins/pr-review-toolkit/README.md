@@ -153,12 +153,12 @@ Use them individually for targeted reviews or together via the `/review-pr` comm
 
 ## Context-Aware Reviews
 
-All agents are designed to gather context beyond the PR diff using codebase tools:
+All agents are designed to gather context beyond the PR diff using CodeGraph:
 
-- **`find_definitions`** — Locate where symbols are defined
-- **`find_references`** — Trace how symbols are used across the codebase
-- **`search_codebase`** — Text, semantic, or hybrid search for patterns, utilities, and conventions
-- **`read_file_summary`** — Get file API surfaces without reading full implementations
+- **`codegraph_search`** — Find symbols by name or pattern
+- **`codegraph_context`** — 360-degree view: definition, callers, callees, inheritance (requires CodeGraph)
+- **`codegraph_callers`** / **`codegraph_callees`** — Trace how symbols are used across the codebase (requires CodeGraph)
+- **`codegraph_impact`** — Blast radius analysis for change assessment (requires CodeGraph)
 
 This means agents evaluate your PR against the actual codebase patterns, not just theoretical best practices.
 

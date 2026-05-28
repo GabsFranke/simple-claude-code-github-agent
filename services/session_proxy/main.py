@@ -265,6 +265,9 @@ async def lifespan(app: FastAPI):
         REDIS_URL,
         password=REDIS_PASSWORD,
         decode_responses=False,  # Keep raw bytes for pub/sub
+        socket_timeout=60,
+        socket_connect_timeout=10,
+        retry_on_timeout=True,
     )
     logger.info(f"Connected to Redis at {REDIS_URL}")
 

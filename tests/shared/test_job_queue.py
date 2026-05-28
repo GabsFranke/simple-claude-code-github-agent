@@ -170,16 +170,42 @@ class TestJobQueueGetNextJob:
 
     @pytest.mark.asyncio
     async def test_get_next_job_redis_error(self):
-        """Test get_next_job with Redis connection error."""
+        """Test get_next_job with Redis connection error reconnects gracefully."""
         queue = JobQueue(redis_url="redis://localhost:6379")
 
         mock_redis = AsyncMock()
         mock_redis.blpop = AsyncMock(side_effect=OSError("Connection lost"))
         queue.redis = mock_redis
+        # Mock reconnect to avoid real Redis connection attempt
+        queue._reconnect = AsyncMock()
 
         result = await queue.get_next_job(timeout=5)
 
         assert result is None
+        queue._reconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_next_job_timeout_error(self):
+        """Test get_next_job with Redis TimeoutError reconnects gracefully.
+
+        redis.exceptions.TimeoutError is NOT a subclass of OSError, so it
+        must be caught explicitly. This is the error seen when BLPOP's
+        socket_timeout conflicts with the blocking timeout.
+        """
+        queue = JobQueue(redis_url="redis://localhost:6379")
+
+        mock_redis = AsyncMock()
+        mock_redis.blpop = AsyncMock(
+            side_effect=TimeoutError("Timeout reading from redis:6379")
+        )
+        queue.redis = mock_redis
+        # Mock reconnect to avoid real Redis connection attempt
+        queue._reconnect = AsyncMock()
+
+        result = await queue.get_next_job(timeout=5)
+
+        assert result is None
+        queue._reconnect.assert_called_once()
 
 
 class TestJobQueueCompleteJob:

@@ -11,14 +11,13 @@ build: ## Build all Docker images
 	@mkdir -p logs/langfuse
 	docker compose build
 
-up: ## Start all services (detached). Optional: make up SANDBOX=10 MEMORY=2 RETRO=2 INDEXING=2
+up: ## Start all services (detached). Optional: make up SANDBOX=10 MEMORY=2 RETRO=2
 	@mkdir -p logs/langfuse
-	@if [ -n "$(SANDBOX)$(MEMORY)$(RETRO)$(INDEXING)" ]; then \
+	@if [ -n "$(SANDBOX)$(MEMORY)$(RETRO)" ]; then \
 		docker compose up -d \
 			--scale sandbox_worker=$(or $(SANDBOX),1) \
 			--scale memory_worker=$(or $(MEMORY),1) \
-			--scale retrospector_worker=$(or $(RETRO),1) \
-			--scale indexing_worker=$(or $(INDEXING),1); \
+			--scale retrospector_worker=$(or $(RETRO),1); \
 	else \
 		docker compose up -d; \
 	fi
@@ -29,7 +28,7 @@ down: ## Stop all services
 restart: down up ## Restart all services
 
 logs: ## Tail logs for bot services only
-	docker compose logs -f webhook worker sandbox_worker memory_worker retrospector_worker repo_sync indexing_worker
+	docker compose logs -f webhook worker sandbox_worker memory_worker retrospector_worker repo_sync
 
 logs-all: ## Tail logs for all services
 	docker compose logs -f

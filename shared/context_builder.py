@@ -1,7 +1,7 @@
 """Async structural context generation for SDK worker jobs.
 
 Generates file tree as a pre-built text string. Deep structure (call graph,
-imports, inheritance) is available on-demand via the codebase_tools MCP server.
+imports, inheritance) is available on-demand via the CodeGraph MCP server.
 Called from process_job() BEFORE builder construction (outside the sync builder).
 """
 
@@ -21,7 +21,7 @@ async def generate_structural_context(repo_path: Path) -> str:
     blocking operations outside the synchronous SDKOptionsBuilder.
 
     Deep structure (call graph, imports, inheritance) is available
-    on-demand via the codebase_tools MCP server — the file tree
+    on-demand via the CodeGraph MCP server — the file tree
     provides orientation only.
 
     Args:

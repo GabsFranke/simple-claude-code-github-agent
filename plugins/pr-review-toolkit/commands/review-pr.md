@@ -76,7 +76,7 @@ Review agents have access to efficient search tools for code exploration (docume
 
 5. **Launch Review Agents: tool_name: Agent**
 
-   **Do NOT read all changed files yourself before launching agents.** Your job is to route, not to review. Use `read_file_summary` on a few key files only if you need context for routing decisions (e.g., which agents to run, what areas to assign). Launch agents early — they will read files themselves.
+   **Do NOT read all changed files yourself before launching agents.** Your job is to route, not to review. Use `codegraph_node` on a few key symbols only if you need context for routing decisions (e.g., which agents to run, what areas to assign). Launch agents early — they will read files themselves.
 
    **Parallel approach** (default):
    - Launch all agents simultaneously in a single message
@@ -294,7 +294,7 @@ Review agents have access to efficient search tools for code exploration (docume
 - **Turn budget**: Spend no more than 30% of turns reading/orchestration. Reserve 30% for agent launches and 40% for aggregation + posting. If you've spent more than ~10 turns reading files without launching agents, stop and launch them immediately.
 - Agents run in git worktree with direct file system access
 - Each agent focuses on its specialty for deep analysis
-- Agents use codebase tools (find_definitions, find_references, search_codebase, read_file_summary) and semantic search to understand broader context beyond the diff
+- Agents use codebase tools (codegraph_search, codegraph_context, codegraph_callers, codegraph_callees) and semantic search to understand broader context beyond the diff
 - Results are actionable with specific file:line references
 - GitHub MCP tools are optional for posting results
 - All agents available in `/agents` list

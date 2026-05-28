@@ -102,9 +102,6 @@ services:
       - ENABLE_BUILTIN_PLUGINS=${ENABLE_BUILTIN_PLUGINS:-false}
       - MEMORY_WORKER_ENABLED=${MEMORY_WORKER_ENABLED:-true}
       - RETROSPECTOR_ENABLED=${RETROSPECTOR_ENABLED:-true}
-      - INDEXING_ENABLED=${INDEXING_ENABLED:-false}
-      - SURREALDB_URL=ws://surrealdb:8000/rpc
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       redis:
         condition: service_healthy
@@ -204,50 +201,5 @@ services:
       repo_sync:
         condition: service_healthy
 
-  # Multi-model database for code intelligence (graph + vector + full-text)
-  surrealdb:
-    image: surrealdb/surrealdb:latest
-    volumes:
-      - surrealdb-data:/data
-    ports:
-      - "127.0.0.1:8000:8000"
-    command: start --user root --pass root rocksdb:/data/db
-    healthcheck:
-      test: ["CMD", "/surreal", "is-ready", "--conn", "http://localhost:8000"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # Background worker: chunks code, generates embeddings, stores in SurrealDB
-  indexing_worker:
-    build:
-      context: .
-      dockerfile: services/indexing_worker/Dockerfile
-    command: sh -c 'python -m services.indexing_worker.indexing_worker 2>&1 | tee /var/log/bot/indexing_worker.log'
-    env_file: .env
-    volumes:
-      - repo-cache:/var/cache/repos:rw
-      - ./logs:/var/log/bot
-    environment:
-      - PYTHONPATH=/app
-      - REDIS_URL=redis://redis:6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-myredissecret}
-      - SURREALDB_URL=ws://surrealdb:8000/rpc
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - INDEXING_ENABLED=${INDEXING_ENABLED:-true}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-gemini-embedding-001}
-      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:-1024}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - GITHUB_APP_ID=${GITHUB_APP_ID}
-      - GITHUB_INSTALLATION_ID=${GITHUB_INSTALLATION_ID}
-      - GITHUB_PRIVATE_KEY=${GITHUB_PRIVATE_KEY}
-    depends_on:
-      redis:
-        condition: service_healthy
-      surrealdb:
-        condition: service_healthy
-
 volumes:
   repo-cache:
-  surrealdb-data:

@@ -315,7 +315,7 @@ class SDKOptionsBuilder:
             "mcp__github__*",
             "mcp__github_actions__*",
             "mcp__memory__memory_read",
-            "mcp__codebase_tools__*",
+            "mcp__codegraph__*",
         ]
 
         if os.getenv("ALLOW_HOST_MCP", "false").lower() == "true":
@@ -389,7 +389,7 @@ class SDKOptionsBuilder:
         """Add post-session hooks for transcript path capture and job buffering.
 
         This hook captures the native transcript path from the SDK and buffers
-        post-processing jobs (memory, retrospector, indexing) in
+        post-processing jobs (memory, retrospector) in
         ``_pending_post_jobs``. Jobs are NOT enqueued immediately — the
         SDK may fire Stop/SubagentStop multiple times per session. The
         caller must invoke ``flush_pending_post_jobs()`` after the SDK
@@ -410,10 +410,6 @@ class SDKOptionsBuilder:
         retrospector_enabled = (
             os.getenv("RETROSPECTOR_ENABLED", "true").lower() == "true"
         )
-        from shared.config import IndexingConfig
-
-        cfg = IndexingConfig()
-        indexing_enabled = cfg.is_enabled and bool(cfg.gemini_api_key)
 
         # Capture context from builder for hooks to use
         repo_context = self._repo_context
@@ -466,16 +462,6 @@ class SDKOptionsBuilder:
                             "agent_id": input_data.get("agent_id"),
                             "agent_type": input_data.get("agent_type"),
                         },
-                    }
-                )
-
-            if indexing_enabled:
-                pending.append(
-                    {
-                        "type": "indexing",
-                        "repo": repo,
-                        "event": event,
-                        "ref": ref,
                     }
                 )
 
@@ -632,7 +618,7 @@ class SDKOptionsBuilder:
         """Inject pre-built structural context into system prompt.
 
         Structural context (file tree only — deep structure available via
-        codebase_tools MCP) is the lowest priority component and will be
+        CodeGraph MCP) is the lowest priority component and will be
         truncated first if the total system prompt exceeds the budget.
 
         Args:

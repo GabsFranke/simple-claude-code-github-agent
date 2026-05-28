@@ -8,6 +8,8 @@ import shutil
 import sys
 from typing import Any
 
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
 from shared import JobQueue, setup_graceful_shutdown
 from shared.constants import (
     CLOSED_SESSION_TTL_HOURS,
@@ -241,6 +243,13 @@ async def main():
                 # Process job
                 await process_job(job_queue, job_id, job_data)
 
+            except (OSError, RedisTimeoutError) as e:
+                # Redis connection errors — force reconnection so the next
+                # iteration starts from a clean state instead of looping on
+                # a stale connection.
+                logger.warning(f"Redis connection error, reconnecting: {e}")
+                await job_queue._reconnect()
+                await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"Error in worker loop: {e}", exc_info=True)
                 await asyncio.sleep(5)

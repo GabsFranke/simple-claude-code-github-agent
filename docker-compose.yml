@@ -125,9 +125,6 @@ services:
       - ENABLE_BUILTIN_PLUGINS=${ENABLE_BUILTIN_PLUGINS:-false}
       - MEMORY_WORKER_ENABLED=${MEMORY_WORKER_ENABLED:-true}
       - RETROSPECTOR_ENABLED=${RETROSPECTOR_ENABLED:-true}
-      - INDEXING_ENABLED=${INDEXING_ENABLED:-false}
-      - SURREALDB_URL=http://surrealdb:8000/rpc
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       redis:
         condition: service_healthy
@@ -143,7 +140,7 @@ services:
     build:
       context: .
       dockerfile: services/mcp_proxy/Dockerfile
-    command: sh -c '(socat TCP-LISTEN:11434,fork TCP:host.docker.internal:11434 >/dev/null 2>&1 &) && (socat TCP-LISTEN:8000,fork TCP:surrealdb:8000 >/dev/null 2>&1 &) && uvicorn services.mcp_proxy.main:app --host 0.0.0.0 --port 18000 2>&1 | tee /var/log/bot/mcp_proxy.log'
+    command: sh -c '(socat TCP-LISTEN:11434,fork TCP:host.docker.internal:11434 >/dev/null 2>&1 &) && uvicorn services.mcp_proxy.main:app --host 0.0.0.0 --port 18000 2>&1 | tee /var/log/bot/mcp_proxy.log'
     env_file: .env
     restart: unless-stopped
     ports:
@@ -155,9 +152,6 @@ services:
     environment:
       - PYTHONPATH=/app
       - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - SURREALDB_URL=http://surrealdb:8000/rpc
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - INDEXING_ENABLED=${INDEXING_ENABLED:-false}
     depends_on:
       redis:
         condition: service_healthy
@@ -441,52 +435,6 @@ services:
       retries: 3
       start_period: 10s
 
-  # Multi-model database: graph edges + vector search + full-text search
-  surrealdb:
-    image: surrealdb/surrealdb:latest
-    user: "0:0"
-    volumes:
-      - surrealdb-data:/data
-    ports:
-      - "127.0.0.1:8000:8000"
-    command: start --user root --pass root rocksdb:/data/db
-    healthcheck:
-      test: ["CMD", "/surreal", "isready"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-
-  # Background worker: chunks code, generates embeddings, stores in SurrealDB
-  indexing_worker:
-    build:
-      context: .
-      dockerfile: services/indexing_worker/Dockerfile
-    command: sh -c 'python -m services.indexing_worker.indexing_worker 2>&1 | tee /var/log/bot/indexing_worker.log'
-    env_file: .env
-    restart: unless-stopped
-    volumes:
-      - repo-cache:/var/cache/repos:rw
-      - ./logs:/var/log/bot
-    environment:
-      - PYTHONPATH=/app
-      - REDIS_URL=redis://redis:6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - SURREALDB_URL=http://surrealdb:8000/rpc
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - INDEXING_ENABLED=${INDEXING_ENABLED:-false}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-gemini-embedding-001}
-      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:-1024}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - GITHUB_APP_ID=${GITHUB_APP_ID}
-      - GITHUB_INSTALLATION_ID=${GITHUB_INSTALLATION_ID}
-      - GITHUB_PRIVATE_KEY=${GITHUB_PRIVATE_KEY}
-    depends_on:
-      redis:
-        condition: service_healthy
-      surrealdb:
-        condition: service_healthy
-
   session_proxy:
     build:
       context: .
@@ -520,4 +468,3 @@ volumes:
   langfuse-clickhouse-data:
   langfuse-clickhouse-logs:
   langfuse-minio-data:
-  surrealdb-data:

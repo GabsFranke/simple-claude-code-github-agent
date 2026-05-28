@@ -77,7 +77,7 @@ docker-compose up --build -d
 docker-compose -f docker-compose.minimal.yml up --build -d
 ```
 
-Manual setup is not recommended. The system requires 7+ services running simultaneously (webhook, worker, sandbox_worker, repo_sync, memory_worker, retrospector_worker, indexing_worker, Redis, and optionally SurrealDB/Langfuse).
+Manual setup is not recommended. The system requires 6+ services running simultaneously (webhook, worker, sandbox_worker, repo_sync, memory_worker, retrospector_worker, Redis, and optionally Langfuse).
 
 ## Project Structure
 
@@ -90,7 +90,6 @@ claude-code-github-agent/
 │   ├── repo_sync/            # Bare repository cache management
 │   ├── memory_worker/        # Memory extraction from session transcripts
 │   ├── retrospector_worker/  # Self-improvement: analyzes sessions, opens PRs
-│   ├── indexing_worker/      # Semantic code indexing + code graph (Gemini + SurrealDB)
 │   └── session_proxy/        # WebSocket streaming bridge for browser sessions
 │       ├── main.py            # FastAPI app with WebSocket + REST endpoints
 │       ├── transcript_loader.py  # SDK transcript file loading for history replay
@@ -106,15 +105,11 @@ claude-code-github-agent/
 │   ├── dlq.py                # Dead-letter queue utilities
 │   ├── rate_limiter.py       # Token bucket rate limiting (Redis-backed)
 │   ├── github_auth.py        # GitHub App authentication
-│   ├── chunker.py            # Tree-sitter code chunker
 │   ├── repomap.py            # Aider-style repomap (tree-sitter)
 │   ├── context_builder.py    # Structural context generation with caching
 │   ├── ts_languages.py       # 10-language tree-sitter registry
-│   ├── code_graph.py         # Symbol index for code intelligence queries (graph traversal)
-│   ├── file_tree.py          # File tree generation + SurrealDB collection naming
+│   ├── file_tree.py          # File tree generation with exclusion rules
 │   ├── import_resolver.py    # Python/TypeScript import path resolution
-│   ├── route_maps.py         # API route and MCP tool definition extraction
-│   ├── surrealdb_client.py   # SurrealDB connection management and schema
 │   ├── transcript_parser.py  # JSONL transcript parsing
 │   ├── session_store.py      # SessionStore — Redis-backed persistent sessions with TTL
 │   ├── streaming_session.py   # StreamingSessionStore — streaming session metadata
@@ -130,7 +125,7 @@ claude-code-github-agent/
 ├── mcp_servers/              # MCP server implementations
 │   ├── base.py               # Shared stdio JSON-RPC 2.0 server loop
 │   ├── memory/               # memory_read / memory_write tools
-│   └── codebase_tools/       # find_definitions, find_references, search_codebase (text/semantic/hybrid), read_file_summary
+│   └── ...
 ├── plugins/                  # Claude Code plugins
 │   ├── pr-review-toolkit/    # PR review workflow (7 agents, review-pr command)
 │   ├── ci-failure-toolkit/   # CI failure analysis (4 agents, GitHub Actions MCP)
@@ -248,17 +243,17 @@ tests/
 ├── sandbox_executor/                    # Sandbox execution tests
 ├── repo_sync/                           # Repo sync tests
 ├── retrospector_worker/                 # Retrospector tests
-├── services/indexing_worker/            # Indexing pipeline tests
+├── services/                          # Service-level tests
 ├── mcp_servers/                         # MCP server tests
 │   ├── test_base.py                     # JSON-RPC protocol
-│   ├── codebase_tools/                  # find_definitions, search (text/semantic/hybrid), etc.
+│   └── ...
 │   ├── memory/                          # memory_read/write + security
 ├── plugins/                             # Plugin tests (GitHub Actions tools)
 ├── workflows/                           # Workflow engine tests (routing, filters, skip_self)
 ├── integration/                         # Integration tests (require live Redis)
 │   ├── test_queue_integration.py
 │   └── test_webhook_handlers.py
-└── test_chunker.py, test_repomap_queries.py  # Root-level chunker/repomap tests
+└── test_repomap_queries.py                # Root-level repomap tests
 ```
 
 ### Writing Tests
@@ -296,9 +291,9 @@ async def test_queue_publish(mock_redis):
 docker-compose -f docker-compose.minimal.yml up --build -d
 ```
 
-Services: webhook, worker, sandbox_worker, mcp_proxy, repo_sync, memory_worker, retrospector_worker, Redis, SurrealDB, indexing_worker
+Services: webhook, worker, sandbox_worker, mcp_proxy, repo_sync, memory_worker, retrospector_worker, Redis
 
-Volumes: repo-cache, agent-memory, transcripts, surrealdb-data
+Volumes: repo-cache, agent-memory, transcripts
 
 **Host `~/.claude/` integration**: The sandbox worker bind-mounts `~/.claude/` from your host. Plugins and skills installed with Claude Code CLI on the host are automatically discovered inside Docker. MCP server tool permissions are also auto-discovered when `ALLOW_HOST_MCP=true`, but only HTTP-based host servers reachable via `host.docker.internal` will function — stdio-based host MCP servers are not proxied. See [CONFIGURATION.md](CONFIGURATION.md) for details.
 
@@ -312,7 +307,7 @@ Services: Minimal + Langfuse (PostgreSQL, ClickHouse, MinIO, Worker, Web UI at h
 
 Volumes: Minimal + langfuse-db-data, langfuse-clickhouse-data, langfuse-clickhouse-logs, langfuse-minio-data
 
-**Semantic search**: Set `INDEXING_ENABLED=true` and `GEMINI_API_KEY` to activate the indexing worker.
+**Code intelligence**: CodeGraph runs as its own MCP server (`codegraph serve --mcp`). The sandbox executor initializes repos with `codegraph init -i` after worktree creation (optional — graceful fallback if unavailable). The `shared/mcp_json_writer.py` adds a `codegraph` stdio MCP server entry to `.mcp.json` so the Claude agent can call graph-oriented tools (search, context, trace, callers, callees, impact, node, explore, files, status) directly. No extra configuration needed.
 
 ### Docker Images
 
@@ -326,7 +321,6 @@ Volumes: Minimal + langfuse-db-data, langfuse-clickhouse-data, langfuse-clickhou
 | repo_sync           | python:3.12-slim | Non-root `bot` user, git                                           |
 | memory_worker       | python:3.12-slim | Non-root `bot` user                                                |
 | retrospector_worker | python:3.12-slim | Non-root `bot` user, git                                           |
-| indexing_worker     | python:3.12-slim | Non-root `bot` user, git                                           |
 
 ### Scaling Strategy
 
@@ -363,12 +357,12 @@ make up SANDBOX=20
 
 ```bash
 # Scale all worker types
-make up SANDBOX=10 MEMORY=2 RETRO=2 INDEXING=2
+make up SANDBOX=10 MEMORY=2 RETRO=2
 
 # If no scaling parameters provided, uses docker-compose defaults (1 of each)
 ```
 
-Jobs typically take 2-10 minutes. Scale based on your peak activity, not average. The sandbox worker is the primary bottleneck — other workers (memory, retrospector, indexing) typically stay at 1 each unless you have very high activity.
+Jobs typically take 2-10 minutes. Scale based on your peak activity, not average. The sandbox worker is the primary bottleneck — other workers (memory, retrospector) typically stay at 1 each unless you have very high activity.
 
 ### Manual Installation (without Docker)
 
@@ -405,7 +399,7 @@ cd services/agent_worker && python worker.py
 | Sandbox execution         | 1-30 min                       |
 | Memory extraction         | 30-60s (Haiku)                 |
 | Retrospector              | 2-5 min (Sonnet)               |
-| Indexing                  | 1-5 min (depends on repo size) |
+| CodeGraph indexing        | < 30s (local SQLite, no API calls) |
 
 First job for a repo takes ~30s (clone). Subsequent jobs take ~1s (worktree from cached bare repo). Repomap is cached by commit hash + personalization.
 
@@ -436,7 +430,6 @@ docker-compose logs -f sandbox_worker
 docker-compose logs -f repo_sync
 docker-compose logs -f memory_worker
 docker-compose logs -f retrospector_worker
-docker-compose logs -f indexing_worker
 ```
 
 ### Health Monitoring
