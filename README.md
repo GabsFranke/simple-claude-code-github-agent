@@ -114,11 +114,11 @@ make start
 
 # Or step by step:
 make build    # Build all Docker images
-make up       # Start all services (detached)
+make up       # Start core services (no Langfuse)
 make ngrok    # Open ngrok tunnel to webhook on port 10000
 
-# Minimal setup (no Langfuse)
-make up-minimal
+# With Langfuse observability:
+make up-langfuse
 ```
 
 Run `make help` to see all available targets. Service logs are written to `./logs/` per service — use `tail -f logs/webhook.log` or `make logs` to follow along.
@@ -127,11 +127,11 @@ Run `make help` to see all available targets. Service logs are written to `./log
 <summary>Using docker compose directly</summary>
 
 ```bash
-# Minimal setup
-docker-compose -f docker-compose.minimal.yml up --build -d
+# Core stack (no Langfuse)
+docker compose up --build -d
 
-# Full setup with Langfuse observability
-docker-compose up --build -d
+# With Langfuse observability
+docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up --build -d
 ```
 
 </details>

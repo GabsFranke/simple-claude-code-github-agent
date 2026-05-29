@@ -15,7 +15,7 @@ Complete guide for developers working on the Claude Code GitHub Agent.
   - [Test Structure](#test-structure)
   - [Writing Tests](#writing-tests)
 - [Deployment](#deployment)
-  - [Minimal vs Full Setup](#minimal-vs-full-setup)
+  - [Core vs Full (with Langfuse) Setup](#core-vs-full-with-langfuse-setup)
   - [Docker Images](#docker-images)
   - [Scaling Strategy](#scaling-strategy)
   - [Manual Installation (without Docker)](#manual-installation-without-docker)
@@ -70,11 +70,11 @@ See [CONFIGURATION.md](CONFIGURATION.md) for all options.
 ### Start Services
 
 ```bash
-# Docker (recommended)
-docker-compose up --build -d
+# Docker (recommended — core stack only)
+docker compose up --build -d
 
-# Or minimal setup (no Langfuse observability)
-docker-compose -f docker-compose.minimal.yml up --build -d
+# With Langfuse observability
+docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up --build -d
 ```
 
 Manual setup is not recommended. The system requires 6+ services running simultaneously (webhook, worker, sandbox_worker, repo_sync, memory_worker, retrospector_worker, Redis, and optionally Langfuse).
@@ -283,29 +283,29 @@ async def test_queue_publish(mock_redis):
 
 ## Deployment
 
-### Minimal vs Full Setup
+### Core vs Full (with Langfuse) Setup
 
-**Minimal** (no observability stack):
+**Core** (no observability stack):
 
 ```bash
-docker-compose -f docker-compose.minimal.yml up --build -d
+docker compose up --build -d
 ```
 
 Services: webhook, worker, sandbox_worker, mcp_proxy, repo_sync, memory_worker, retrospector_worker, Redis
 
-Volumes: repo-cache, agent-memory, transcripts
+Volumes: repo-cache, redis-data
 
 **Host `~/.claude/` integration**: The sandbox worker bind-mounts `~/.claude/` from your host. Plugins and skills installed with Claude Code CLI on the host are automatically discovered inside Docker. MCP server tool permissions are also auto-discovered when `ALLOW_HOST_MCP=true`, but only HTTP-based host servers reachable via `host.docker.internal` will function — stdio-based host MCP servers are not proxied. See [CONFIGURATION.md](CONFIGURATION.md) for details.
 
 **Full** (with Langfuse observability):
 
 ```bash
-docker-compose up --build -d
+docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up --build -d
 ```
 
-Services: Minimal + Langfuse (PostgreSQL, ClickHouse, MinIO, Worker, Web UI at http://localhost:7500)
+Services: Core + Langfuse (PostgreSQL, ClickHouse, MinIO, Worker, Web UI at http://localhost:7500)
 
-Volumes: Minimal + langfuse-db-data, langfuse-clickhouse-data, langfuse-clickhouse-logs, langfuse-minio-data
+Volumes: Core + langfuse-db-data, langfuse-clickhouse-data, langfuse-clickhouse-logs, langfuse-minio-data
 
 **Code intelligence**: CodeGraph runs as its own MCP server (`codegraph serve --mcp`). The sandbox executor initializes repos with `codegraph init -i` after worktree creation (optional — graceful fallback if unavailable). The `shared/mcp_json_writer.py` adds a `codegraph` stdio MCP server entry to `.mcp.json` so the Claude agent can call graph-oriented tools (search, context, trace, callers, callees, impact, node, explore, files, status) directly. No extra configuration needed.
 

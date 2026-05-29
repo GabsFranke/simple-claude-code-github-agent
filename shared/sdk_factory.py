@@ -194,7 +194,7 @@ class SDKOptionsBuilder:
         installed_plugins_path = os.path.join(plugins_dir, "installed_plugins.json")
         if os.path.exists(installed_plugins_path):
             try:
-                with open(installed_plugins_path, "r", encoding="utf-8") as f:
+                with open(installed_plugins_path, encoding="utf-8") as f:
                     data = json.load(f)
                 plugins_dict = data.get("plugins", {})
                 for full_name, installations in plugins_dict.items():

@@ -335,7 +335,10 @@ class RequestProcessor:
 
         # Generate parent span ID for trace linking (if enabled)
         parent_span_id = None
-        if os.getenv("LANGFUSE_TRACE_LINKING", "true").lower() == "true":
+        if (
+            os.getenv("LANGFUSE_ENABLED", "false").lower() in ("true", "1", "yes")
+            and os.getenv("LANGFUSE_TRACE_LINKING", "true").lower() == "true"
+        ):
             parent_span_id = str(uuid.uuid4())
             logger.debug(
                 f"Generated parent span ID for trace linking: {parent_span_id}"
