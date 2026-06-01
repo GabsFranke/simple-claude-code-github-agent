@@ -2,12 +2,12 @@
 
 import logging
 import string
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Any
 
 import yaml  # type: ignore[import]
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from shared.session_store import ConversationConfig as ConversationConfigModel
 from shared.thread_history import ThreadHistoryConfig
@@ -38,6 +38,50 @@ class EventTrigger(BaseModel):
     )
 
 
+class ScheduleTriggerConfig(BaseModel):
+    """Configuration for a schedule trigger."""
+
+    cron: str = Field(..., description="Cron expression (e.g., '0 9 * * 1-5')")
+    timezone: str = Field(default="UTC", description="Timezone for the schedule")
+    repos: list[str] = Field(
+        default_factory=list,
+        description="List of repositories to scope this schedule to. "
+        'Use ["owner/repo", ...] for specific repos, ["*"] for all installed repos. '
+        "Empty list means no repos (schedule is effectively disabled).",
+    )
+    enabled: bool = Field(
+        default=True, description="Whether this schedule trigger is enabled"
+    )
+
+    @field_validator("cron")
+    @classmethod
+    def validate_cron(cls, v: str) -> str:
+        """Validate cron expression."""
+        if not v:
+            raise ValueError("Cron expression cannot be empty")
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+
+            # Trigger validation
+            CronTrigger.from_crontab(v)
+        except ImportError:
+            # Fallback simple check when apscheduler is not installed
+            fields = v.strip().split()
+            if len(fields) not in (5, 6):
+                raise ValueError(
+                    f"Cron expression must have 5 or 6 fields, got {len(fields)}"
+                )
+            import re
+
+            cron_field_pattern = re.compile(r"^[0-9a-zA-Z*,\/\-?#L]+$")
+            for field in fields:
+                if not cron_field_pattern.match(field):
+                    raise ValueError(f"Invalid characters in cron field: '{field}'")
+        except Exception as e:
+            raise ValueError(f"Invalid cron expression '{v}': {e}") from e
+        return v
+
+
 class TriggersConfig(BaseModel):
     """Trigger configuration for a workflow."""
 
@@ -45,6 +89,9 @@ class TriggersConfig(BaseModel):
         default_factory=list, description="GitHub event triggers"
     )
     commands: list[str] = Field(default_factory=list, description="Command triggers")
+    schedule: ScheduleTriggerConfig | None = Field(
+        default=None, description="Time-based schedule trigger"
+    )
     filters: dict[str, Any] = Field(
         default_factory=dict,
         description="Payload field filters (dot-path: expected_value). "
@@ -104,9 +151,6 @@ class WorkflowConfig(BaseModel):
         default_factory=StreamingConfig,
         description="Real-time session streaming settings",
     )
-
-
-
 
 
 class WorkflowsConfig(BaseModel):
@@ -221,11 +265,19 @@ class WorkflowEngine:
                         f"Workflow '{name}' has invalid system_context syntax: {e}"
                     ) from e
 
-    def __init__(self, config_path: str | Path | None = None):
+    def __init__(
+        self,
+        config_path: str | Path | None = None,
+        *,
+        build_routing: bool = True,
+    ):
         """Initialize workflow engine from YAML config.
 
         Args:
             config_path: Path to workflows.yaml file (defaults to workflows.yaml in project root)
+            build_routing: Build event/command lookup tables and validate templates.
+                Set to False for lightweight initialization (e.g. scheduler only needs
+                schedule data, not event routing).
         """
         if config_path is None:
             config_path = Path(__file__).parent.parent / "workflows.yaml"
@@ -260,45 +312,49 @@ class WorkflowEngine:
         # Validate workflow names follow conventions
         self._validate_workflow_names()
 
-        # Build lookup tables for fast routing
+        # Initialize lookup tables (populated only when build_routing=True)
         self._event_map: dict[str, list[str]] = {}
         self._command_map: dict[str, str] = {}
         self._event_filters: dict[tuple[str, str], dict[str, Any]] = {}
 
-        for workflow_name, workflow in self.workflows.items():
-            # Map events to workflows, normalizing to EventTrigger
-            for entry in workflow.triggers.events:
-                if isinstance(entry, str):
-                    trigger = EventTrigger(event=entry)
-                else:
-                    trigger = entry
-                self._event_map.setdefault(trigger.event, []).append(workflow_name)
-                if trigger.filters:
-                    self._event_filters[(workflow_name, trigger.event)] = (
-                        trigger.filters
-                    )
-                logger.debug(
-                    f"Mapped event '{trigger.event}' -> workflow '{workflow_name}'"
-                )
+        if build_routing:
 
-            # Map commands to workflows
-            for command in workflow.triggers.commands:
-                self._command_map[command] = workflow_name
-                logger.debug(
-                    f"Mapped command '{command}' -> workflow '{workflow_name}'"
-                )
+            for workflow_name, workflow in self.workflows.items():
+                # Map events to workflows, normalizing to EventTrigger
+                for entry in workflow.triggers.events:
+                    if isinstance(entry, str):
+                        trigger = EventTrigger(event=entry)
+                    else:
+                        trigger = entry
+                    self._event_map.setdefault(trigger.event, []).append(
+                        workflow_name
+                    )
+                    if trigger.filters:
+                        self._event_filters[(workflow_name, trigger.event)] = (
+                            trigger.filters
+                        )
+                    logger.debug(
+                        f"Mapped event '{trigger.event}' -> workflow '{workflow_name}'"
+                    )
+
+                # Map commands to workflows
+                for command in workflow.triggers.commands:
+                    self._command_map[command] = workflow_name
+                    logger.debug(
+                        f"Mapped command '{command}' -> workflow '{workflow_name}'"
+                    )
+
+            # Validate system context files exist at initialization
+            self._validate_system_context_files()
+            logger.info("All system context files validated")
+
+            # Validate templates at initialization
+            self._validate_templates()
+            logger.info("All workflow templates validated")
 
         logger.info(
             f"Loaded {len(self.workflows)} workflows: {list(self.workflows.keys())}"
         )
-
-        # Validate system context files exist at initialization
-        self._validate_system_context_files()
-        logger.info("All system context files validated")
-
-        # Validate templates at initialization
-        self._validate_templates()
-        logger.info("All workflow templates validated")
 
     def get_workflow_for_event(
         self, event_type: str, action: str | None = None
@@ -581,8 +637,36 @@ class WorkflowEngine:
             return ConversationConfigModel()
         return self.workflows[workflow_name].conversation
 
+    def get_scheduled_workflows(self) -> dict[str, WorkflowConfig]:
+        """Get all workflows that have an enabled schedule trigger.
 
-@lru_cache(maxsize=None)
+        Returns:
+            Dict mapping workflow name to its WorkflowConfig
+        """
+        scheduled = {}
+        for name, workflow in self.workflows.items():
+            if workflow.triggers.schedule and workflow.triggers.schedule.enabled:
+                scheduled[name] = workflow
+        return scheduled
+
+    def get_repos_for_schedule(self, workflow_name: str) -> list[str]:
+        """Resolve the target repositories configured for a workflow's schedule.
+
+        Args:
+            workflow_name: The name of the workflow
+
+        Returns:
+            List of repository names. Empty if not configured.
+        """
+        if workflow_name not in self.workflows:
+            return []
+        workflow = self.workflows[workflow_name]
+        if not workflow.triggers.schedule:
+            return []
+        return workflow.triggers.schedule.repos
+
+
+@cache
 def get_workflow_engine(config_path: str | None = None) -> WorkflowEngine:
     """Get cached WorkflowEngine instance (singleton per config path).
 

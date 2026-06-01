@@ -58,27 +58,6 @@ workflows:
       enabled: true
     skip_self: false
 
-  # OMC-native version of fix-review
-  fix-review:
-    triggers:
-      events:
-        - event: pull_request.labeled
-          filters:
-            label.name: ["fix-review", "fix-it", "pr-fix", "omc-implement"]
-      commands:
-        - /fix-it
-        - /fix-review
-        - /omc-implement
-        - /omc-fix-review
-    prompt:
-      template: "/oh-my-claudecode:autopilot Read all recent PR review comments on PR #{issue_number} in {repo}, and autonomously implement all required code modifications. Test and verify the results locally in the isolated sandbox, then commit and push."
-    description: "OMC-powered autonomous implementation of PR review fixes"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
   # OMC-native version of fix-ci
   fix-ci:
     triggers:
@@ -165,122 +144,6 @@ workflows:
       enabled: true
     skip_self: false
 
-  # OMC Orchestration Mode: Ultra QA
-  omc-ultraqa:
-    triggers:
-      commands:
-        - /ultraqa
-    prompt:
-      template: "/oh-my-claudecode:ultraqa {user_query}"
-    description: "Test-driven verification loops to find and fix bugs"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
-  # OMC Orchestration Mode: Deep Interview
-  omc-deep-interview:
-    triggers:
-      commands:
-        - /interview
-        - /deep-interview
-    prompt:
-      template: "/oh-my-claudecode:deep-interview {user_query}"
-    description: "Socratic interactive alignment session to gather requirements"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
-  # OMC Orchestration Mode: Trace
-  omc-trace:
-    triggers:
-      commands:
-        - /trace
-    prompt:
-      template: "/oh-my-claudecode:trace {user_query}"
-    description: "Analyze and trace codebase dependencies and relationships"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
-  # OMC Orchestration Mode: Deslop
-  omc-deslop:
-    triggers:
-      commands:
-        - /deslop
-        - /slop-cleaner
-    prompt:
-      template: "/oh-my-claudecode:ai-slop-cleaner {user_query}"
-    description: "Refactor codebase to remove slop and align with clean code guidelines"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
-  # OMC Orchestration Mode: Self Improve
-  omc-self-improve:
-    triggers:
-      commands:
-        - /self-improve
-    prompt:
-      template: "/oh-my-claudecode:self-improve {user_query}"
-    description: "Autonomous self-improvement loops for system code quality"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
-  # Git Developer Utility: Release
-  omc-release:
-    triggers:
-      commands:
-        - /release
-        - /omc-release
-    prompt:
-      template: "/oh-my-claudecode:release Generate a beautiful release markdown for {repo}, compile the changelog, and draft/submit the release on GitHub."
-    description: "Autonomously draft changelogs and prepare releases on GitHub"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
-  # Git Developer Utility: Deep Dive Q&A
-  omc-deep-dive:
-    triggers:
-      commands:
-        - /deep-dive
-        - /ask
-    prompt:
-      template: "/oh-my-claudecode:deep-dive {user_query}"
-    description: "Architectural Q&A to answer complex questions about the codebase"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
-  # Git Developer Utility: Verify
-  omc-verify:
-    triggers:
-      commands:
-        - /verify
-    prompt:
-      template: "/oh-my-claudecode:verify Run local verification checks, tests, and lints in the sandbox and post the final verdict."
-    description: "Run comprehensive diagnostic, lint, and test checks locally"
-    conversation:
-      persist: true
-    streaming:
-      enabled: true
-    skip_self: false
-
   # Generic prompt execution fallback
   generic:
     triggers:
@@ -296,3 +159,21 @@ workflows:
     streaming:
       enabled: true
     skip_self: false
+
+  # Nightly code health and technical debt scanner
+  nightly-health:
+    triggers:
+      schedule:
+        cron: "0 2 * * *"          # Every day at 2:00 AM
+        timezone: "UTC"
+        repos: []                   # No repos = schedule is disabled. Use ["*"] for all, or ["owner/repo"]
+        enabled: true              # Disabled by default
+    prompt:
+      template: "Conduct a nightly code health scan, dependency check, and technical debt assessment for {repo}."
+      system_context: "nightly-health.md"
+    description: "Nightly health audit and tech debt monitoring"
+    conversation:
+      persist: true
+    streaming:
+      enabled: true
+    skip_self: true

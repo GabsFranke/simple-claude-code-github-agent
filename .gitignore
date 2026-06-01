@@ -74,6 +74,7 @@ private-key.pem
 ngrok.yml
 
 .omc
+.omo
 .claude
 .codegraph
 claude-plugins-official/

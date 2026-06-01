@@ -315,6 +315,11 @@ class RequestProcessor:
             if claude_md:
                 logger.info("Fetched CLAUDE.md for system context")
         except Exception as e:
+            if event_data.get("trigger_type") == "schedule":
+                logger.warning(
+                    f"Skipping scheduled job for {repo} because it is not accessible (likely bot is uninstalled): {e}"
+                )
+                return "ignored"
             logger.warning(
                 f"Failed to fetch CLAUDE.md from {repo}, continuing without repository context: {e}"
             )
