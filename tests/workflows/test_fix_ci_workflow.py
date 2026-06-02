@@ -44,9 +44,9 @@ class TestFixCIWorkflow:
     def test_fix_ci_command_triggers(self, engine):
         """Test that fix-ci commands are properly mapped."""
         # Test all command aliases
-        assert engine.get_workflow_for_command("/fix-ci") == "fix-ci"
-        assert engine.get_workflow_for_command("/fix-build") == "fix-ci"
-        assert engine.get_workflow_for_command("/fix-tests") == "fix-ci"
+        assert engine.get_workflow_for_command("/fix-ci") == ["fix-ci"]
+        assert engine.get_workflow_for_command("/fix-build") == ["fix-ci"]
+        assert engine.get_workflow_for_command("/fix-tests") == ["fix-ci"]
 
     def test_fix_ci_prompt_template(self, engine):
         """Test that fix-ci prompt template is correctly configured."""

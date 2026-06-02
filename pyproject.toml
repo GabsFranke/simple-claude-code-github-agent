@@ -34,6 +34,8 @@ combine_as_imports = true
 disable = [
     "C0111",  # missing-docstring - we have docstrings where needed
     "C0103",  # invalid-name - allow short variable names
+    "E0401",  # import-error - external deps may not be in lint env
+    "E0611",  # no-name-in-module - false positive from lazy __getattr__ imports
     "R0903",  # too-few-public-methods - dataclasses are fine
     "R0913",  # too-many-arguments - sometimes necessary
     "W0212",  # protected-access - allow when needed

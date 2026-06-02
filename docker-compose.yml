@@ -125,6 +125,8 @@ services:
       - ENABLE_BUILTIN_PLUGINS=${ENABLE_BUILTIN_PLUGINS:-false}
       - MEMORY_WORKER_ENABLED=${MEMORY_WORKER_ENABLED:-true}
       - RETROSPECTOR_ENABLED=${RETROSPECTOR_ENABLED:-true}
+      # Custom API port forwarding (socat: localhost:PORT → host.docker.internal:PORT)
+      - SOCAT_API_FORWARD=${SOCAT_API_FORWARD:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -163,7 +165,7 @@ services:
     build:
       context: .
       dockerfile: services/memory_worker/Dockerfile
-    command: sh -c '(socat TCP-LISTEN:11434,fork TCP:host.docker.internal:11434 >/dev/null 2>&1 &) && (socat TCP-LISTEN:18000,fork TCP:mcp_proxy:18000 >/dev/null 2>&1 &) && python -m services.memory_worker.memory_worker 2>&1 | tee /var/log/bot/memory_worker.log'
+    command: sh -c '(socat TCP-LISTEN:11434,fork TCP:host.docker.internal:11434 >/dev/null 2>&1 &) && (socat TCP-LISTEN:18000,fork TCP:mcp_proxy:18000 >/dev/null 2>&1 &) && ([ -z "$${SOCAT_API_FORWARD}" ] || socat TCP-LISTEN:$${SOCAT_API_FORWARD},fork TCP:host.docker.internal:$${SOCAT_API_FORWARD} >/dev/null 2>&1 &) && python -m services.memory_worker.memory_worker 2>&1 | tee /var/log/bot/memory_worker.log'
     env_file: .env
     restart: unless-stopped
     mem_limit: 4g
@@ -190,6 +192,8 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - WORKER_SESSION_PERSIST=${WORKER_SESSION_PERSIST:-true}
+      # Custom API port forwarding
+      - SOCAT_API_FORWARD=${SOCAT_API_FORWARD:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -203,7 +207,7 @@ services:
     build:
       context: .
       dockerfile: services/retrospector_worker/Dockerfile
-    command: sh -c '(socat TCP-LISTEN:11434,fork TCP:host.docker.internal:11434 >/dev/null 2>&1 &) && (socat TCP-LISTEN:18000,fork TCP:mcp_proxy:18000 >/dev/null 2>&1 &) && python -m services.retrospector_worker.retrospector_worker 2>&1 | tee /var/log/bot/retrospector_worker.log'
+    command: sh -c '(socat TCP-LISTEN:11434,fork TCP:host.docker.internal:11434 >/dev/null 2>&1 &) && (socat TCP-LISTEN:18000,fork TCP:mcp_proxy:18000 >/dev/null 2>&1 &) && ([ -z "$${SOCAT_API_FORWARD}" ] || socat TCP-LISTEN:$${SOCAT_API_FORWARD},fork TCP:host.docker.internal:$${SOCAT_API_FORWARD} >/dev/null 2>&1 &) && python -m services.retrospector_worker.retrospector_worker 2>&1 | tee /var/log/bot/retrospector_worker.log'
     env_file: .env
     restart: unless-stopped
     mem_limit: 4g
@@ -236,6 +240,8 @@ services:
       - GITHUB_APP_ID=${GITHUB_APP_ID}
       - GITHUB_INSTALLATION_ID=${GITHUB_INSTALLATION_ID}
       - GITHUB_PRIVATE_KEY=${GITHUB_PRIVATE_KEY}
+      # Custom API port forwarding
+      - SOCAT_API_FORWARD=${SOCAT_API_FORWARD:-}
       # The bot's own repository — retrospector opens PRs here
       - BOT_REPO=${BOT_REPO:-GabsFranke/claude-code-github-agent}
       - BOT_USERNAME=${BOT_USERNAME:-Claude Code Agent}

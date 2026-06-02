@@ -267,9 +267,10 @@ class TestSkipSelfIntegration:
         engine = WorkflowEngine(workflow_path)
 
         # Simulate bot using /agent command (bot is the actor)
-        workflow_name = engine.get_workflow_for_command("/agent")
+        workflow_names = engine.get_workflow_for_command("/agent")
 
-        if workflow_name:
+        if workflow_names:
+            workflow_name = workflow_names[0]
             # Bot commenting should be skipped if skip_self=true
             should_skip_bot = engine.should_skip_self(
                 workflow_name, "bot-user", "bot-user"
@@ -316,9 +317,10 @@ class TestSkipSelfIntegration:
 
         # Commands like /fix-ci should work even on bot PRs
         # The webhook logic handles this by checking if it's a command
-        workflow_name = engine.get_workflow_for_command("/fix-ci")
+        workflow_names = engine.get_workflow_for_command("/fix-ci")
 
-        if workflow_name:
+        if workflow_names:
+            workflow_name = workflow_names[0]
             # Workflow might have skip_self=true, but commands bypass this
             # This is handled in webhook logic, not engine
             assert workflow_name is not None

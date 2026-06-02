@@ -71,7 +71,7 @@ class TestFixReviewWorkflow:
 
     def test_fix_review_command_trigger(self, engine):
         """Test that /fix-it command triggers fix-review workflow."""
-        assert engine.get_workflow_for_command("/fix-it") == "fix-review"
+        assert engine.get_workflow_for_command("/fix-it") == ["fix-review"]
 
     def test_fix_review_build_prompt(self, engine):
         """Test building prompt for fix-review workflow."""

@@ -161,10 +161,10 @@ class TestWorkflowEngine:
         """Test command to workflow mapping."""
         engine = WorkflowEngine(temp_workflow_file)
 
-        assert engine._command_map["/review"] == "review-pr"
-        assert engine._command_map["/pr-review"] == "review-pr"
-        assert engine._command_map["/triage"] == "triage-issue"
-        assert engine._command_map["/agent"] == "generic"
+        assert engine._command_map["/review"] == ["review-pr"]
+        assert engine._command_map["/pr-review"] == ["review-pr"]
+        assert engine._command_map["/triage"] == ["triage-issue"]
+        assert engine._command_map["/agent"] == ["generic"]
 
     def test_get_workflow_for_event_with_action(self, temp_workflow_file):
         """Test getting workflow for event with action."""
@@ -196,7 +196,7 @@ class TestWorkflowEngine:
 
         workflow = engine.get_workflow_for_command("/review")
 
-        assert workflow == "review-pr"
+        assert workflow == ["review-pr"]
 
     def test_get_workflow_for_command_not_found(self, temp_workflow_file):
         """Test getting workflow for unknown command."""
@@ -204,7 +204,7 @@ class TestWorkflowEngine:
 
         workflow = engine.get_workflow_for_command("/unknown")
 
-        assert workflow is None
+        assert workflow == []
 
     def test_build_prompt_simple(self, temp_workflow_file, tmp_path):
         """Test building simple prompt without system context."""
@@ -407,7 +407,7 @@ class TestWorkflowEngine:
         workflow1 = engine.get_workflow_for_command("/review")
         workflow2 = engine.get_workflow_for_command("/pr-review")
 
-        assert workflow1 == workflow2 == "review-pr"
+        assert workflow1 == workflow2 == ["review-pr"]
 
     def test_system_context_variable_substitution(
         self, temp_workflow_file, temp_prompts_dir, monkeypatch
@@ -494,7 +494,7 @@ class TestWorkflowEngineIntegration:
         assert pr_workflow
 
         review_workflow = engine.get_workflow_for_command("/review")
-        assert review_workflow is not None
+        assert review_workflow  # non-empty list
 
     def test_missing_system_context_file_validation(self, tmp_path):
         """Test that missing system context files are caught at initialization."""

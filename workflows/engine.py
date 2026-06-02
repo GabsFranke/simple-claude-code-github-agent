@@ -314,7 +314,7 @@ class WorkflowEngine:
 
         # Initialize lookup tables (populated only when build_routing=True)
         self._event_map: dict[str, list[str]] = {}
-        self._command_map: dict[str, str] = {}
+        self._command_map: dict[str, list[str]] = {}
         self._event_filters: dict[tuple[str, str], dict[str, Any]] = {}
 
         if build_routing:
@@ -326,9 +326,7 @@ class WorkflowEngine:
                         trigger = EventTrigger(event=entry)
                     else:
                         trigger = entry
-                    self._event_map.setdefault(trigger.event, []).append(
-                        workflow_name
-                    )
+                    self._event_map.setdefault(trigger.event, []).append(workflow_name)
                     if trigger.filters:
                         self._event_filters[(workflow_name, trigger.event)] = (
                             trigger.filters
@@ -337,9 +335,9 @@ class WorkflowEngine:
                         f"Mapped event '{trigger.event}' -> workflow '{workflow_name}'"
                     )
 
-                # Map commands to workflows
+                # Map commands to workflows (multiple workflows can share a command)
                 for command in workflow.triggers.commands:
-                    self._command_map[command] = workflow_name
+                    self._command_map.setdefault(command, []).append(workflow_name)
                     logger.debug(
                         f"Mapped command '{command}' -> workflow '{workflow_name}'"
                     )
@@ -401,16 +399,18 @@ class WorkflowEngine:
         # Skip only if skip_self is enabled AND the event actor is the bot
         return workflow.skip_self and event_actor == bot_username
 
-    def get_workflow_for_command(self, command: str) -> str | None:
-        """Get workflow name for a user command.
+    def get_workflow_for_command(self, command: str) -> list[str]:
+        """Get workflow names for a user command.
+
+        Multiple workflows can share the same command.
 
         Args:
             command: Command string (e.g., "/review")
 
         Returns:
-            Workflow name or None if command not recognized
+            List of workflow names. Empty list if command not recognized.
         """
-        return self._command_map.get(command)
+        return self._command_map.get(command, [])
 
     def check_filters(
         self,

@@ -107,6 +107,17 @@ ANTHROPIC_VERTEX_REGION=us-central1
 | `WORKER_SESSION_PERSIST` | `true` | Persist conversation state so users can continue multi-turn sessions |
 | `SESSION_PROXY_URL` | `http://localhost:10001` | URL for the session proxy WebSocket service. Used by worker and sandbox services to generate live-view links |
 
+### Docker Networking
+
+Containers cannot reach host `localhost` — use `host.docker.internal` instead. This applies to any service running on your host that the containers need to access (Ollama, oc-go-cc, OpenCode, etc.):
+
+| Variable | Correct (container → host) | Wrong (container → itself) |
+|----------|---------------------------|---------------------------|
+| `ANTHROPIC_BASE_URL` | `http://host.docker.internal:3456` | `http://localhost:3456` |
+| Any MCP server URL | `http://host.docker.internal:PORT` | `http://localhost:PORT` |
+
+**Alternative**: Set `SOCAT_API_FORWARD=3456` in `.env` to add automatic socat forwarding (`localhost:3456` → `host.docker.internal:3456`) without changing your `settings.json` URL. This works for all three workers (sandbox, memory, retrospector).
+
 When `ALLOW_HOST_MCP=true`, the SDK builder reads MCP server names from your host `~/.claude.json` and adds their tool patterns (`mcp__{name}__*`) to the agent's allowed tool list. This grants **tool permissions only** — it does not bridge those servers through the MCP proxy. For host MCP servers to actually work inside Docker, they must be independently reachable from the container. HTTP-based servers work if they're accessible via `host.docker.internal`, but stdio-based host servers will not work unless separately proxied.
 
 The `~/.claude/` directory is bind-mounted read-write, so plugins and skills installed on the host via Claude Code CLI are also discovered automatically. On first run, built-in plugins and skills are seeded into `~/.claude/` (without overwriting existing files).

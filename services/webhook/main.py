@@ -65,6 +65,29 @@ async def health():
     }
 
 
+def _extract_body(event_type: str, action: str, data: dict) -> str | None:
+    """Extract text body from webhook payload for command parsing.
+
+    Covers issue/PR/discussion creation bodies and comment bodies.
+    Only parses on 'created'/'opened' actions — edits don't re-trigger.
+    """
+    if action not in ("created", "opened"):
+        return None
+    if event_type == "issues":
+        body_val = data.get("issue", {}).get("body")
+        return body_val if isinstance(body_val, str) else None
+    if event_type == "pull_request":
+        body_val = data.get("pull_request", {}).get("body")
+        return body_val if isinstance(body_val, str) else None
+    if event_type == "discussion":
+        body_val = data.get("discussion", {}).get("body")
+        return body_val if isinstance(body_val, str) else None
+    if event_type in ("issue_comment", "discussion_comment"):
+        body_val = data.get("comment", {}).get("body")
+        return body_val if isinstance(body_val, str) else None
+    return None
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     """Handle GitHub webhook events."""
@@ -137,13 +160,13 @@ async def webhook(request: Request):
         user_query = ""
         command = None
 
-        # --- Overlay: command parsing for issue_comment events ---
-        if event_type == "issue_comment" and action == "created":
-            body = data.get("comment", {}).get("body", "")
-
-            # Parse command from comment
-            match = re.match(r"^(/\S+)\s*(.*)", body.strip())
-            if match:
+        # --- Overlay: command parsing from event bodies and comments ---
+        # Supports: issue/PR/discussion opened bodies, and comment bodies
+        body = _extract_body(event_type, action, data)
+        if body:
+            # Parse command from body
+            match: re.Match[str] | None = re.match(r"^(/\S+)\s*(.*)", body.strip())
+            if match is not None:
                 command = match.group(1)
                 user_query = match.group(2).strip()
 
@@ -155,8 +178,9 @@ async def webhook(request: Request):
                         "message": "Command is too long (max 50 characters)",
                     }
 
-                if not re.match(r"^/[a-z0-9\-]+$", command):
-                    logger.warning(f"Invalid command format: {command}")  # type: ignore[unreachable]
+                fmt_match: re.Match[str] | None = re.match(r"^/[a-z0-9\-]+$", command)
+                if fmt_match is None:
+                    logger.warning(f"Invalid command format: {command}")
                     return {
                         "status": "error",
                         "message": "Invalid command format. Use lowercase letters, numbers, and hyphens only.",
@@ -164,18 +188,22 @@ async def webhook(request: Request):
 
                 event_data["command"] = command
 
+                thread_number = (
+                    data.get("issue", {}).get("number")
+                    or data.get("pull_request", {}).get("number")
+                    or data.get("discussion", {}).get("number")
+                )
                 logger.info(
-                    "Command '%s' on issue #%s with query: %s",
+                    "Command '%s' on %s.%s #%s with query: %s",
                     command,
-                    data.get("issue", {}).get("number"),
+                    event_type,
+                    action,
+                    thread_number,
                     user_query[:50] if user_query else "(none)",
                 )
-            else:
-                logger.debug("Comment does not contain a command")  # type: ignore[unreachable]
-                # Note: This early return means issue_comment events
-                # without commands cannot trigger workflows. If a
-                # workflow needs to respond to all issue_comment events,
-                # this check must be moved after workflow routing.
+            elif event_type == "issue_comment":
+                # Preserve existing behavior: bare issue_comment = ignored
+                logger.debug("Comment does not contain a command")
                 return {"status": "ignored", "message": "No command found in comment"}
 
         # --- Generic extraction for all event types ---
@@ -208,26 +236,29 @@ async def webhook(request: Request):
             fields.user,
         )
 
-        # Check if we have a workflow configured for this event/command
-        workflow_name = None
+        # Collect ALL matching workflows for this event/command
+        # Both event and command sources contribute — a command on issues.opened
+        # should fire both the command workflow AND event-based workflows like triage.
+        matching_workflows: list[str] = []
         if command:
-            workflow_name = workflow_engine.get_workflow_for_command(command)
-            logger.info(f"Command '{command}' -> workflow '{workflow_name}'")
-        elif event_type:
+            matching_workflows = workflow_engine.get_workflow_for_command(command)
+            logger.info("Command '%s' -> workflows: %s", command, matching_workflows)
+        if event_type:
             candidates = workflow_engine.get_workflow_for_event(event_type, action)
             event_key = f"{event_type}.{action}" if action else event_type
             for candidate in candidates:
                 if workflow_engine.check_filters(candidate, data, event_key):
-                    workflow_name = candidate
+                    if candidate not in matching_workflows:
+                        matching_workflows.append(candidate)
                     logger.info(
-                        f"Event {event_type}.{action} -> workflow '{workflow_name}'"
+                        f"Event {event_type}.{action} -> workflow '{candidate}'"
                     )
-                    break
-                logger.debug(
-                    "Skipping candidate '%s' - filters did not match", candidate
-                )
+                else:
+                    logger.debug(
+                        "Skipping candidate '%s' - filters did not match", candidate
+                    )
 
-        if not workflow_name:
+        if not matching_workflows:
             logger.info(
                 f"No workflow configured for event={event_type}.{action} command={command} - ignoring"
             )
@@ -244,40 +275,55 @@ async def webhook(request: Request):
         event_actor = data.get("sender", {}).get("login", "")
         bot_username = config.webhook_bot_username
 
-        if bot_username and workflow_engine.should_skip_self(
-            workflow_name, event_actor, bot_username
-        ):
+        # Filter out workflows that should skip self (bot-triggered events)
+        dispatched: list[str] = []
+        for workflow_name in matching_workflows:
+            if bot_username and workflow_engine.should_skip_self(
+                workflow_name, event_actor, bot_username
+            ):
+                logger.info(
+                    f"Skipping workflow '{workflow_name}' - event triggered by bot itself "
+                    f"(actor: {event_actor}, skip_self: true)"
+                )
+                continue
+
+            # Queue agent job with event data
+            job = {
+                "repository": repo,
+                "issue_number": issue_number,
+                "event_data": event_data,
+                "user_query": user_query,
+                "user": user,
+                "ref": ref,
+                "workflow_name": workflow_name,  # Pass workflow name to worker
+            }
+
             logger.info(
-                f"Skipping workflow '{workflow_name}' - event triggered by bot itself "
-                f"(actor: {event_actor}, skip_self: true)"
+                "Queueing job: workflow=%s, event=%s.%s, issue=%s, query=%s",
+                workflow_name,
+                event_type,
+                action,
+                issue_number,
+                user_query[:50] if user_query else "(none)",
+            )
+            await queue.publish(job)
+            dispatched.append(workflow_name)
+
+        if not dispatched:
+            logger.info(
+                "All matching workflows skipped (skip_self) for event=%s.%s",
+                event_type,
+                action,
             )
             return {
                 "status": "ignored",
-                "message": f"Skipping event from bot itself (skip_self enabled for workflow '{workflow_name}')",
+                "message": "All matching workflows skipped (bot self-triggered with skip_self enabled)",
             }
 
-        # Queue agent job with event data
-        job = {
-            "repository": repo,
-            "issue_number": issue_number,
-            "event_data": event_data,
-            "user_query": user_query,
-            "user": user,
-            "ref": ref,
-            "workflow_name": workflow_name,  # Pass workflow name to worker
+        return {
+            "status": "accepted",
+            "message": f"Agent is processing your request ({len(dispatched)} workflow(s): {', '.join(dispatched)})",
         }
-
-        logger.info(
-            "Queueing job: workflow=%s, event=%s.%s, issue=%s, query=%s",
-            workflow_name,
-            event_type,
-            action,
-            issue_number,
-            user_query[:50] if user_query else "(none)",
-        )
-        await queue.publish(job)
-
-        return {"status": "accepted", "message": "Agent is processing your request"}
 
     except HTTPException:
         raise

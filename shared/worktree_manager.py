@@ -138,7 +138,12 @@ async def reuse_or_create_worktree(
 
 
 async def _fetch_and_checkout(worktree_path: Path, ref: str) -> None:
-    """Fetch latest changes and check out the requested ref."""
+    """Fetch latest changes and check out the requested ref.
+
+    Submodule updating is handled by the processor after credentials are
+    configured (via ``_init_submodules()``), ensuring auth is available
+    for private submodule clones.
+    """
     # Fetch all remotes
     await execute_git_command(["git", "-C", str(worktree_path), "fetch", "origin"])
 

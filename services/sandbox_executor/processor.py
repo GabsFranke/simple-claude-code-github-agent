@@ -78,6 +78,7 @@ class JobProcessor:
 
             await self._setup_worktree()
             await self._configure_git()
+            await self._init_submodules()
             await self._run_repo_setup()
             await self._prepare_context()
             result = await self._execute_sdk_loop()
@@ -294,6 +295,7 @@ class JobProcessor:
 
     async def _configure_git(self):
         credentials_file = os.path.join(self.workspace, ".git-credentials")
+        # Set worktree-level credential helper for primary repo operations
         config_code, _, config_err = await execute_git_command(
             ["git", "config", "credential.helper", f"store --file={credentials_file}"],
             cwd=self.workspace,
@@ -302,6 +304,20 @@ class JobProcessor:
             raise WorktreeCreationError(
                 f"Failed to configure git credentials: {config_err}"
             )
+
+        # Also set globally — submodule clone operations spawn new git repos
+        # that don't inherit worktree-level config.  The global setting
+        # ensures submodule `git clone` can authenticate without an
+        # interactive terminal.
+        await execute_git_command(
+            [
+                "git",
+                "config",
+                "--global",
+                "credential.helper",
+                f"store --file={credentials_file}",
+            ]
+        )
 
         fd = os.open(credentials_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -334,6 +350,37 @@ class JobProcessor:
             ["git", "config", "user.email", bot_email], cwd=self.workspace
         )
 
+    async def _init_submodules(self):
+        """Initialize git submodules if .gitmodules exists in the worktree.
+
+        Runs after worktree creation and git credential configuration so
+        that private submodules can authenticate.  Failure is non-fatal —
+        the agent can still work with source code, just without submodules.
+        """
+        gitmodules = Path(self.workspace) / ".gitmodules"
+        if not gitmodules.exists():
+            return
+
+        logger.info(f"Found .gitmodules, initializing submodules for {self.repo}...")
+        code, _, err = await execute_git_command(
+            [
+                "git",
+                "-C",
+                self.workspace,
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ]
+        )
+        if code != 0:
+            logger.warning(
+                f"Submodule init failed for {self.repo} (exit {code}): "
+                f"{err}. Continuing without submodules."
+            )
+        else:
+            logger.info(f"Submodules initialized successfully for {self.repo}")
+
     async def _run_repo_setup(self):
         try:
             setup_engine = RepoSetupEngine()
@@ -349,25 +396,31 @@ class JobProcessor:
                     logger.warning(
                         f"Some setup commands failed for {self.repo}, continuing anyway..."
                     )
-                    for result in setup_result["results"]:
-                        if not result.get("success"):
-                            cmd_info = result.get(
-                                "commands", result.get("command", "unknown")
-                            )
-                            if isinstance(cmd_info, list):
-                                cmd_info = " && ".join(cmd_info)
-                            logger.warning(
-                                f"Failed command(s): {cmd_info} - {result.get('error', 'unknown error')}"
-                            )
+                    self._log_setup_failures(setup_result["results"])
                 else:
                     logger.info(
-                        f"Setup completed successfully for {self.repo} in {setup_result['elapsed_seconds']:.1f}s"
+                        f"Setup completed successfully for {self.repo} "
+                        f"in {setup_result['elapsed_seconds']:.1f}s"
                     )
         except Exception as e:
             logger.warning(
-                f"Error during repository setup for {self.repo}: {e}. Continuing with job execution...",
+                f"Error during repository setup for {self.repo}: {e}. "
+                f"Continuing with job execution...",
                 exc_info=True,
             )
+
+    @staticmethod
+    def _log_setup_failures(results: list) -> None:
+        """Log individual failed setup commands from a setup result."""
+        for result in results:
+            if not result.get("success"):
+                cmd_info = result.get("commands", result.get("command", "unknown"))
+                if isinstance(cmd_info, list):
+                    cmd_info = " && ".join(cmd_info)
+                logger.warning(
+                    f"Failed command(s): {cmd_info} - "
+                    f"{result.get('error', 'unknown error')}"
+                )
 
     async def _prepare_context(self):
         try:
@@ -424,6 +477,7 @@ class JobProcessor:
                 cwd=self.workspace,
                 timeout=60,
                 capture_output=True,
+                check=False,
             )
             logger.info("CodeGraph index initialized for %s", self.workspace)
         except FileNotFoundError:
@@ -899,6 +953,11 @@ class JobProcessor:
                 if os.path.exists(per_job_creds):
                     os.remove(per_job_creds)
                     logger.debug("Cleaned up per-job git credentials")
+                # Unset global credential helper to avoid stale references
+                # when the credentials file no longer exists
+                await execute_git_command(
+                    ["git", "config", "--global", "--unset", "credential.helper"]
+                )
         except Exception as e:
             logger.warning(f"Failed to cleanup credentials: {e}")
 
