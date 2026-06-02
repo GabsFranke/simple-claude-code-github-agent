@@ -103,17 +103,33 @@ def find_transcript_by_repo(repo: str, issue_number: int, workflow: str) -> Path
 
 
 def _transcript_matches(path: Path, issue_number: int, workflow: str) -> bool:
-    """Check if a transcript file is for the given issue number and workflow.
+    """Check if a transcript file is for the given issue number and workflow."""
+    dir_name = path.parent.name
 
-    Reads only the first few lines looking for a user message that references
-    the issue number. Falls back to a quick check of the file path or
-    project dir name if no match is found in the first lines.
-    """
-    issue_str = f"#{issue_number}"
+    # The SDK sanitizes worktree paths into project dir names.
+    # e.g. "...-issue-5-ralph" contains both "issue-5" and "ralph".
+    if workflow not in dir_name:
+        logger.debug(
+            f"[transcript_loader] SKIP {dir_name}: "
+            f"workflow {workflow!r} not in dir name"
+        )
+        return False
+
+    # Dir name encodes the issue number — trust it without file I/O.
+    issue_str = str(issue_number)
+    if f"issue-{issue_str}" in dir_name or f"-{issue_str}-" in dir_name:
+        logger.debug(
+            f"[transcript_loader] MATCH {path.name}: "
+            f"dir name encodes issue {issue_str!r} and workflow {workflow!r}"
+        )
+        return True
+
+    # Legacy: dir doesn't encode issue number, scan file content.
+    ref = f"#{issue_str}"
     try:
         with open(path, encoding="utf-8") as f:
             for i, raw_line in enumerate(f):
-                if i >= 30:  # Only scan first 30 lines
+                if i >= 30:
                     break
                 line = raw_line.strip()
                 if not line:
@@ -123,22 +139,34 @@ def _transcript_matches(path: Path, issue_number: int, workflow: str) -> bool:
                 except json.JSONDecodeError:
                     continue
 
-                # Check user messages for issue number reference
                 if entry.get("type") == "user":
                     content = entry.get("message", {}).get("content", "")
-                    if isinstance(content, str) and issue_str in content:
+                    if isinstance(content, str) and ref in content:
+                        logger.debug(
+                            f"[transcript_loader] MATCH {path.name}: "
+                            f"found {ref!r} in user message (line {i})"
+                        )
                         return True
                     if isinstance(content, list):
                         for block in content:
                             if (
                                 isinstance(block, dict)
                                 and block.get("type") == "text"
-                                and issue_str in block.get("text", "")
+                                and ref in block.get("text", "")
                             ):
+                                logger.debug(
+                                    f"[transcript_loader] MATCH {path.name}: "
+                                    f"found {ref!r} in content block (line {i})"
+                                )
                                 return True
     except Exception as e:
         logger.debug(f"Error scanning transcript {path.name}: {e}")
 
+    logger.debug(
+        f"[transcript_loader] NO MATCH {path.name}: "
+        f"workflow={workflow!r} in dir={dir_name!r}, "
+        f"looking for {ref!r}"
+    )
     return False
 
 

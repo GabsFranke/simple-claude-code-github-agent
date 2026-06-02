@@ -236,6 +236,13 @@ async def _execute_sdk_once(
     except TimeoutError as e:
         raise SDKTimeoutError(f"SDK execution timed out after {sdk_timeout}s") from e
     except Exception as e:
+        # MessageParseError from the SDK indicates incomplete streaming data
+        # from the API — the connection was interrupted before the full
+        # assistant message (including its 'signature' field) arrived.
+        # This is a transient connection-level issue; a retry with a fresh
+        # connection will produce a complete response.
+        if type(e).__qualname__ == "MessageParseError":
+            raise SDKError(f"SDK streaming connection interrupted: {e}") from e
         raise SDKError(f"SDK execution failed: {e}") from e
 
     response = "\n".join(response_parts) if collect_text else None

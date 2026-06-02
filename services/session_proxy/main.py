@@ -325,8 +325,10 @@ async def resolve_session(
     """
     try:
         issue_number = int(number)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Issue number must be an integer")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="Issue number must be an integer"
+        ) from exc
 
     full_repo = f"{owner}/{repo}"
     thread_type = url_segment_to_thread_type(thread_type_segment)
@@ -383,42 +385,100 @@ async def resolve_session(
 async def _load_history_async(
     session: dict[str, str], store: StreamingSessionStore, token: str
 ) -> list[dict]:
-    """Load conversation history — transcript file first, Redis fallback.
-
-    Transcript files (SDK JSONL on the shared ~/.claude volume) are the
-    primary history source. They persist across container restarts and
-    contain the full conversation. Redis history is the fallback for
-    sessions that are still running (transcript may not exist yet).
-    """
-    # Try transcript-based loading first (sync — reads from disk)
+    """Load conversation history — transcript file first, Redis fallback."""
+    repo = session.get("repo", "")
+    issue_number_str = session.get("issue_number", "")
+    workflow = session.get("workflow", "")
     transcript_path = session.get("transcript_path", "")
+    session_id = session.get("session_id", "")
+
+    logger.debug(
+        f"[WS] _load_history_async token={token[:8]}... "
+        f"repo={repo!r} issue={issue_number_str!r} workflow={workflow!r} "
+        f"transcript_path={transcript_path!r} session_id={session_id[:8] if session_id else ''!r}..."
+    )
+
+    def _in_correct_workdir(p: Path) -> bool:
+        if not workflow:
+            return True
+        return workflow in p.parent.name
+
     if transcript_path:
         p = Path(transcript_path)
-        if p.exists():
+        if not p.exists():
+            logger.debug(f"[WS] transcript_path {transcript_path!r} does not exist")
+        elif not _in_correct_workdir(p):
+            logger.debug(
+                f"[WS] transcript_path {p.name} in wrong workdir "
+                f"{p.parent.name!r}, expected workflow {workflow!r}"
+            )
+        else:
             messages = load_transcript_history(p)
             if messages:
                 logger.info(
                     f"[WS] Loaded {len(messages)} messages from transcript {p.name}"
                 )
                 return messages
+            logger.debug(f"[WS] transcript_path {p.name} loaded 0 messages")
 
-    # Try finding transcript by session_id
-    session_id = session.get("session_id", "")
     if session_id:
         found_path = find_transcript(session_id)
-        if found_path:
+        if found_path is None:
+            logger.debug(f"[WS] find_transcript({session_id[:8]}...) returned None")
+        elif not _in_correct_workdir(found_path):
+            logger.warning(
+                f"[WS] session_id {session_id[:8]}... resolved to "
+                f"{found_path.parent.name}, expected workflow {workflow!r} — "
+                f"falling through to repo-based lookup"
+            )
+        else:
             messages = load_transcript_history(found_path)
             if messages:
                 await store.update_transcript_path(token, str(found_path))
                 logger.info(
-                    f"[WS] Loaded {len(messages)} messages from discovered transcript {found_path.name}"
+                    f"[WS] Loaded {len(messages)} messages from "
+                    f"discovered transcript {found_path.name}"
                 )
                 return messages
+            logger.debug(
+                f"[WS] session_id transcript {found_path.name} loaded 0 messages"
+            )
 
-    # Fall back to Redis history
     redis_history = await store.get_history(token)
+    if redis_history:
+        logger.info(
+            f"[WS] Using Redis history for session {token[:8]}... "
+            f"({len(redis_history)} messages)"
+        )
+        return redis_history
+
+    if issue_number_str and repo and workflow:
+        try:
+            issue_num = int(issue_number_str)
+            found_path = find_transcript_by_repo(repo, issue_num, workflow)
+            if found_path is None:
+                logger.debug(
+                    f"[WS] find_transcript_by_repo({repo!r}, {issue_num}, "
+                    f"{workflow!r}) returned None"
+                )
+            else:
+                messages = load_transcript_history(found_path)
+                if messages:
+                    await store.update_transcript_path(token, str(found_path))
+                    logger.info(
+                        f"[WS] Loaded {len(messages)} messages from "
+                        f"repo-matched transcript {found_path.name}"
+                    )
+                    return messages
+                logger.debug(
+                    f"[WS] repo-matched transcript {found_path.name} "
+                    f"loaded 0 messages"
+                )
+        except Exception as e:
+            logger.debug(f"[WS] repo-based lookup failed: {e}")
+
     logger.debug(
-        f"[WS] Using Redis history for session {token[:8]}... "
+        f"[WS] No history found for session {token[:8]}... "
         f"({len(redis_history)} messages)"
     )
     return redis_history
