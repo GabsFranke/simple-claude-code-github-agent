@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -33,6 +32,7 @@ from shared.utils import build_session_url
 from shared.worktree_lock import WorktreeKey, WorktreeLock
 from shared.worktree_manager import get_worktree_path, reuse_or_create_worktree
 
+from .git_setup import configure_git, init_submodules
 from .utils import configure_builder, find_transcript_path, write_transcript_meta
 
 logger = logging.getLogger(__name__)
@@ -77,9 +77,15 @@ class JobProcessor:
                 return
 
             await self._setup_worktree()
-            await self._configure_git()
-            await self._init_submodules()
-            await self._run_repo_setup()
+            await configure_git(self.workspace, self.job_data["github_token"])
+            await init_submodules(self.workspace, self.repo)
+            if self.session_mode not in ("resume", "continue"):
+                await self._run_repo_setup()
+            else:
+                logger.info(
+                    f"Skipping repo setup on {self.session_mode} — "
+                    f"worktree already provisioned"
+                )
             await self._prepare_context()
             result = await self._execute_sdk_loop()
 
@@ -87,6 +93,12 @@ class JobProcessor:
                 await self._save_session(result)
                 if result.get("is_cancelled"):
                     await self._mark_cancelled(result)
+                elif result.get("is_error"):
+                    await self._handle_error(
+                        SDKError(
+                            f"SDK reported error: {result.get('response', 'unknown error')[:200]}"
+                        )
+                    )
                 else:
                     await self._mark_success(result)
 
@@ -123,22 +135,41 @@ class JobProcessor:
         # Always regenerate the token when installation_id is available.
         # Reclaimed jobs may carry a stale (expired) token from backup, and
         # checking "if not github_token" would skip regeneration for those.
-        if self.job_data.get("installation_id"):
+        #
+        # Fall back through: job_data.installation_id → event_data →
+        # GITHUB_INSTALLATION_ID env var (last resort for sessions where
+        # the transcript meta was lost before the fix was applied).
+        installation_id = (
+            self.job_data.get("installation_id")
+            or self.job_data.get("event_data", {}).get("installation_id", "")
+            or os.getenv("GITHUB_INSTALLATION_ID", "")
+        )
+        if installation_id:
             try:
                 from shared.github_auth import GitHubAuthService
 
-                auth = GitHubAuthService(
-                    installation_id=str(self.job_data["installation_id"])
-                )
+                auth = GitHubAuthService(installation_id=str(installation_id))
                 async with auth:
                     self.job_data["github_token"] = await auth.get_token()
                 logger.info(
-                    f"Generated GitHub token from installation_id {self.job_data['installation_id']}"
+                    f"Generated GitHub token from installation_id {installation_id}"
                 )
             except Exception as e:
                 logger.warning(
                     f"Failed to generate GitHub token from installation_id: {e}"
                 )
+
+        # Ensure we have a valid GitHub token before proceeding.
+        # Resume/reclaim jobs carry installation_id but may not include
+        # github_token — if regeneration fails, fail the job explicitly
+        # instead of crashing later with a cryptic KeyError in _configure_git
+        # or _execute_sdk_loop.
+        if not self.job_data.get("github_token"):
+            raise WorktreeCreationError(
+                "GitHub token unavailable: installation_id missing or "
+                "token generation failed. Ensure GITHUB_APP_ID, "
+                "GITHUB_PRIVATE_KEY, and installation_id are configured."
+            )
 
         self.repo_dir = await wait_for_repo_sync(
             self.repo, self.ref, self.job_queue.redis
@@ -292,94 +323,6 @@ class JobProcessor:
                 code, _out, err = await execute_git_command(wt_cmd_fb)
                 if code != 0:
                     raise WorktreeCreationError(f"Failed to create worktree: {err}")
-
-    async def _configure_git(self):
-        credentials_file = os.path.join(self.workspace, ".git-credentials")
-        # Set worktree-level credential helper for primary repo operations
-        config_code, _, config_err = await execute_git_command(
-            ["git", "config", "credential.helper", f"store --file={credentials_file}"],
-            cwd=self.workspace,
-        )
-        if config_code != 0:
-            raise WorktreeCreationError(
-                f"Failed to configure git credentials: {config_err}"
-            )
-
-        # Also set globally — submodule clone operations spawn new git repos
-        # that don't inherit worktree-level config.  The global setting
-        # ensures submodule `git clone` can authenticate without an
-        # interactive terminal.
-        await execute_git_command(
-            [
-                "git",
-                "config",
-                "--global",
-                "credential.helper",
-                f"store --file={credentials_file}",
-            ]
-        )
-
-        fd = os.open(credentials_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(
-                fd,
-                f"https://x-access-token:{self.job_data['github_token']}@github.com\n".encode(),
-            )
-        finally:
-            os.close(fd)
-
-        bot_username = os.getenv("BOT_USERNAME", "Claude Code Agent")
-        bot_email = os.getenv(
-            "BOT_USER_EMAIL", "claude-code-agent[bot]@users.noreply.github.com"
-        )
-
-        _safe_pattern = re.compile(r"^[a-zA-Z0-9\s.\-\[\]@]+$")
-        if not _safe_pattern.match(bot_username):
-            raise ValueError(
-                f"BOT_USERNAME contains invalid characters: {bot_username!r}"
-            )
-        if not _safe_pattern.match(bot_email):
-            raise ValueError(
-                f"BOT_USER_EMAIL contains invalid characters: {bot_email!r}"
-            )
-
-        await execute_git_command(
-            ["git", "config", "user.name", bot_username], cwd=self.workspace
-        )
-        await execute_git_command(
-            ["git", "config", "user.email", bot_email], cwd=self.workspace
-        )
-
-    async def _init_submodules(self):
-        """Initialize git submodules if .gitmodules exists in the worktree.
-
-        Runs after worktree creation and git credential configuration so
-        that private submodules can authenticate.  Failure is non-fatal —
-        the agent can still work with source code, just without submodules.
-        """
-        gitmodules = Path(self.workspace) / ".gitmodules"
-        if not gitmodules.exists():
-            return
-
-        logger.info(f"Found .gitmodules, initializing submodules for {self.repo}...")
-        code, _, err = await execute_git_command(
-            [
-                "git",
-                "-C",
-                self.workspace,
-                "submodule",
-                "update",
-                "--init",
-                "--recursive",
-            ]
-        )
-        if code != 0:
-            logger.warning(
-                f"Submodule init failed for {self.repo} (exit {code}): "
-                f"{err}. Continuing without submodules."
-            )
-        else:
-            logger.info(f"Submodules initialized successfully for {self.repo}")
 
     async def _run_repo_setup(self):
         try:
@@ -831,7 +774,10 @@ class JobProcessor:
                     write_transcript_meta(
                         transcript_path,
                         {
-                            "installation_id": self.job_data.get("installation_id", ""),
+                            "installation_id": self.job_data.get("installation_id")
+                            or self.job_data.get("event_data", {}).get(
+                                "installation_id", ""
+                            ),
                             "ref": self.ref,
                             "user": self.job_data.get("user", "remote-control"),
                             "thread_type": self.thread_type,

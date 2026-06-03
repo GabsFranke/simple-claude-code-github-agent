@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from services.session_proxy.transcript_loader import (
     find_transcript,
     find_transcript_by_repo,
+    load_history,
     load_transcript_history,
     load_transcript_meta,
 )
@@ -117,13 +118,18 @@ async def _create_job(job_data: dict) -> str:
     return job_id
 
 
-def _build_job_data(
+async def _build_job_data(
     session: dict[str, str],
     content: str,
     conversation_config: dict,
     token: str,
 ) -> dict:
-    """Build a job_data dict for session resume/rehydration."""
+    """Build a job_data dict for session resume/rehydration.
+
+    Regenerates a fresh GitHub token from the stored installation_id
+    so the resume job always carries a valid token, even if the
+    processor's own regeneration fails as a fallback.
+    """
     repo = session.get("repo", "")
     issue_number_str = str(session.get("issue_number", "0"))
     issue_number = int(issue_number_str) if issue_number_str.isdigit() else 0
@@ -133,6 +139,28 @@ def _build_job_data(
     ref = session.get("ref", "main")
     user = session.get("user", "remote-control")
     installation_id = session.get("installation_id", "")
+
+    github_token = None
+    # Always attempt regeneration — GitHubAuthService falls back to
+    # GITHUB_INSTALLATION_ID env var when no explicit id is provided,
+    # which covers sessions where the transcript meta was written
+    # before the installation_id persistence fix was applied.
+    if installation_id or os.getenv("GITHUB_INSTALLATION_ID"):
+        try:
+            from shared.github_auth import GitHubAuthService
+
+            auth = GitHubAuthService(installation_id=installation_id)
+            async with auth:
+                github_token = await auth.get_token()
+            logger.info(
+                f"[Resume] Generated fresh GitHub token for session {token[:8]}..."
+            )
+        except Exception as e:
+            logger.warning(
+                f"[Resume] Failed to generate GitHub token from "
+                f"installation_id for session {token[:8]}...: {e}"
+            )
+
     return {
         "repo": repo,
         "issue_number": issue_number,
@@ -145,6 +173,7 @@ def _build_job_data(
         "session_token": token,
         "streaming_enabled": True,
         "installation_id": installation_id,
+        "github_token": github_token,
         "thread_type": thread_type,
         "thread_id": str(issue_number),
         "conversation_config": conversation_config,
@@ -245,7 +274,7 @@ async def _handle_resume_message(
     # run_start when it starts processing the job, which avoids a duplicate
     # event if both session_proxy and sandbox_worker emit it.
 
-    job_data = _build_job_data(session, content, conversation_config, token)
+    job_data = await _build_job_data(session, content, conversation_config, token)
     job_id = await _create_job(job_data)
     logger.info(
         f"[Resume] Created job {job_id} for session {token[:8]}... "
@@ -378,113 +407,6 @@ async def resolve_session(
 
 
 # ---------------------------------------------------------------------------
-# History loading (transcript-first, Redis fallback)
-# ---------------------------------------------------------------------------
-
-
-async def _load_history_async(
-    session: dict[str, str], store: StreamingSessionStore, token: str
-) -> list[dict]:
-    """Load conversation history — transcript file first, Redis fallback."""
-    repo = session.get("repo", "")
-    issue_number_str = session.get("issue_number", "")
-    workflow = session.get("workflow", "")
-    transcript_path = session.get("transcript_path", "")
-    session_id = session.get("session_id", "")
-
-    logger.debug(
-        f"[WS] _load_history_async token={token[:8]}... "
-        f"repo={repo!r} issue={issue_number_str!r} workflow={workflow!r} "
-        f"transcript_path={transcript_path!r} session_id={session_id[:8] if session_id else ''!r}..."
-    )
-
-    def _in_correct_workdir(p: Path) -> bool:
-        if not workflow:
-            return True
-        return workflow in p.parent.name
-
-    if transcript_path:
-        p = Path(transcript_path)
-        if not p.exists():
-            logger.debug(f"[WS] transcript_path {transcript_path!r} does not exist")
-        elif not _in_correct_workdir(p):
-            logger.debug(
-                f"[WS] transcript_path {p.name} in wrong workdir "
-                f"{p.parent.name!r}, expected workflow {workflow!r}"
-            )
-        else:
-            messages = load_transcript_history(p)
-            if messages:
-                logger.info(
-                    f"[WS] Loaded {len(messages)} messages from transcript {p.name}"
-                )
-                return messages
-            logger.debug(f"[WS] transcript_path {p.name} loaded 0 messages")
-
-    if session_id:
-        found_path = find_transcript(session_id)
-        if found_path is None:
-            logger.debug(f"[WS] find_transcript({session_id[:8]}...) returned None")
-        elif not _in_correct_workdir(found_path):
-            logger.warning(
-                f"[WS] session_id {session_id[:8]}... resolved to "
-                f"{found_path.parent.name}, expected workflow {workflow!r} — "
-                f"falling through to repo-based lookup"
-            )
-        else:
-            messages = load_transcript_history(found_path)
-            if messages:
-                await store.update_transcript_path(token, str(found_path))
-                logger.info(
-                    f"[WS] Loaded {len(messages)} messages from "
-                    f"discovered transcript {found_path.name}"
-                )
-                return messages
-            logger.debug(
-                f"[WS] session_id transcript {found_path.name} loaded 0 messages"
-            )
-
-    redis_history = await store.get_history(token)
-    if redis_history:
-        logger.info(
-            f"[WS] Using Redis history for session {token[:8]}... "
-            f"({len(redis_history)} messages)"
-        )
-        return redis_history
-
-    if issue_number_str and repo and workflow:
-        try:
-            issue_num = int(issue_number_str)
-            found_path = find_transcript_by_repo(repo, issue_num, workflow)
-            if found_path is None:
-                logger.debug(
-                    f"[WS] find_transcript_by_repo({repo!r}, {issue_num}, "
-                    f"{workflow!r}) returned None"
-                )
-            else:
-                messages = load_transcript_history(found_path)
-                if messages:
-                    await store.update_transcript_path(token, str(found_path))
-                    logger.info(
-                        f"[WS] Loaded {len(messages)} messages from "
-                        f"repo-matched transcript {found_path.name}"
-                    )
-                    return messages
-                logger.debug(
-                    f"[WS] repo-matched transcript {found_path.name} "
-                    f"loaded 0 messages"
-                )
-        except Exception as e:
-            logger.debug(f"[WS] repo-based lookup failed: {e}")
-
-    logger.debug(
-        f"[WS] No history found for session {token[:8]}... "
-        f"({len(redis_history)} messages)"
-    )
-    return redis_history
-
-
-# ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
 
@@ -528,6 +450,11 @@ async def _resolve_token_from_path(
             "status": "completed",
             "session_proxy_url": full_url,
             **_sanitize_session(meta),
+            # installation_id is stripped by _sanitize_session above (it's
+            # sensitive for browser display), but _rehydrate_transcript_session
+            # needs it to regenerate GitHub tokens. The browser never sees it
+            # because session_meta messages are sanitized separately at L629.
+            "installation_id": meta.get("installation_id", ""),
         }
 
     return None, None
@@ -687,7 +614,7 @@ async def websocket_session(
 
     if not history_sent:
         # Normal path: load history from Redis/transcript
-        history = await _load_history_async(session, store, token)
+        history = await load_history(session, store, token)
         if history:
             for msg in history:
                 try:
@@ -820,7 +747,9 @@ async def _rehydrate_transcript_session(
                 )
             conversation_config.setdefault("persist", True)
 
-            job_data = _build_job_data(session, content, conversation_config, new_token)
+            job_data = await _build_job_data(
+                session, content, conversation_config, new_token
+            )
 
             job_id = await _create_job(job_data)
             await store.set_running(new_token)

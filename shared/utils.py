@@ -7,8 +7,11 @@ from typing import Any, Literal
 _THREAD_TYPE_TO_URL = {"pr": "pull", "issue": "issues", "discussion": "discussions"}
 _URL_SEGMENT_TO_THREAD_TYPE = {
     "pull": "pr",
+    "pr": "pr",
     "issues": "issue",
+    "issue": "issue",
     "discussions": "discussion",
+    "discussion": "discussion",
 }
 
 
