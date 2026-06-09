@@ -114,6 +114,104 @@ def streaming_lookup_key(
     return SESSION_LOOKUP_KEY.format(f"{safe_repo}:{tid}:{workflow}")
 
 
+def streaming_session_key(token: str) -> str:
+    """Build the Redis key for a streaming session hash.
+
+    Redis type: Hash
+    TTL: ``DEFAULT_SESSION_TTL_SECONDS`` (set on creation)
+    Written by: ``StreamingSessionStore.create_session()``
+    Read by: ``StreamingSessionStore.get_session()``, ``set_completed()``,
+             ``set_running()``, ``update_session_id()``, etc.
+
+    Returns a key like ``session:stream:{token}``.
+    """
+    return SESSION_KEY.format(token)
+
+
+def inbox_key(token: str) -> str:
+    """Build the Redis key for a session's message inbox.
+
+    Redis type: List
+    TTL: ``DEFAULT_SESSION_TTL_SECONDS``
+    Written by: ``ControlChannel._dispatch()``,
+                ``StreamingSessionStore.push_inbox_message()``
+    Read by: ``StreamingSessionStore.pop_inbox_messages()``
+
+    Returns a key like ``session:inbox:{token}``.
+    """
+    return SESSION_INBOX_KEY.format(token)
+
+
+def subscribers_key(token: str) -> str:
+    """Build the Redis key for a session's active subscriber count.
+
+    Redis type: Integer (String internally)
+    TTL: ``DEFAULT_SESSION_TTL_SECONDS`` (set on first INCR via Lua script)
+    Written by: ``StreamingSessionStore.increment_subscribers()``,
+                ``StreamingSessionStore.decrement_subscribers()``
+    Read by: ``StreamingSessionStore.has_subscribers()``
+
+    Returns a key like ``session:subscribers:{token}``.
+    """
+    return SESSION_SUBSCRIBERS_KEY.format(token)
+
+
+def history_key(token: str) -> str:
+    """Build the Redis key for a session's short-lived message history.
+
+    Redis type: List
+    TTL: ``HISTORY_TTL_SECONDS``
+    Written by: ``SessionStreamBridge.publish()``
+    Read by: ``StreamingSessionStore.get_history()``
+
+    Returns a key like ``session:history:{token}``.
+    """
+    return SESSION_HISTORY_KEY.format(token)
+
+
+def session_key(repo: str, thread_type: str, thread_id: str, workflow: str) -> str:
+    """Build the Redis key for a persistent session mapping.
+
+    Redis type: Hash
+    TTL: ``ConversationConfig.ttl_hours`` (default ``DEFAULT_SESSION_TTL_HOURS``)
+    Written by: ``SessionStore.save_session()``
+    Read by: ``SessionStore.get_session()``, ``close_session()``,
+             ``expire_session()``, etc.
+
+    Returns a key like ``session:map:{safe_repo}:{thread_type}:{thread_id}:{workflow}``.
+    """
+    safe_repo = sanitize_repo_key(repo)
+    return f"session:map:{safe_repo}:{thread_type}:{thread_id}:{workflow}"
+
+
+def session_pattern(repo: str) -> str:
+    """Build a Redis SCAN pattern for all session mappings of a repository.
+
+    Redis type: Pattern (used with SCAN)
+    Used by: ``SessionStore.list_sessions()``
+
+    Returns a pattern like ``session:map:{safe_repo}:*``.
+    """
+    safe_repo = sanitize_repo_key(repo)
+    return f"session:map:{safe_repo}:*"
+
+
+def session_cleanup_key(repo: str, thread_type: str, thread_id: str) -> str:
+    """Build the Redis key for worktree cleanup coordination.
+
+    This key prevents multiple workers from attempting to clean up
+    the same session worktree simultaneously.
+
+    Redis type: String (with TTL)
+    Written by: ``SessionStore.close_session()`` / cleanup orchestrators
+    Read by: Worktree cleanup workers
+
+    Returns a key like ``session:cleanup:{safe_repo}:{thread_type}:{thread_id}``.
+    """
+    safe_repo = sanitize_repo_key(repo)
+    return f"session:cleanup:{safe_repo}:{thread_type}:{thread_id}"
+
+
 def decode_redis_hash(data: dict[bytes | str, bytes | str]) -> dict[str, str]:
     """Decode all keys and values in a Redis hash result from bytes to str.
 

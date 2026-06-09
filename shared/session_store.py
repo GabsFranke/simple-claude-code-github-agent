@@ -6,7 +6,9 @@ thread ID + workflow, and expire after a configurable TTL.
 """
 
 import logging
+import warnings
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Literal
 
 try:
@@ -21,11 +23,60 @@ from pydantic import BaseModel, Field
 from .constants import (
     DEFAULT_SESSION_TTL_HOURS,
     decode_redis_hash,
-    sanitize_repo_key,
-    streaming_lookup_key,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Re-export public key builders from constants.py
+# (Task 2 consolidated them there — we expose them here for convenience)
+# ---------------------------------------------------------------------------
+
+from .constants import (  # noqa: E402, F401  (intentional re-exports)
+    history_key,
+    inbox_key,
+    session_cleanup_key,
+    session_key,
+    session_pattern,
+    streaming_lookup_key,
+    subscribers_key,
+)
+
+__all__ = [
+    "ConversationConfig",
+    "SessionInfo",
+    "SessionStatus",
+    "SessionStore",
+    "SessionStoreConfig",
+    "UnifiedSessionInfo",
+    "history_key",
+    "inbox_key",
+    "resolve_thread_type",
+    "session_cleanup_key",
+    "session_key",
+    "session_pattern",
+    "streaming_lookup_key",
+    "subscribers_key",
+]
+
+# ---------------------------------------------------------------------------
+# Session status enum (Track 1 — merged store schema)
+# ---------------------------------------------------------------------------
+
+
+class SessionStatus(StrEnum):
+    """Unified session lifecycle status.
+
+    Replaces the ad-hoc ``Literal["active", "completed", "expired"]`` in
+    ``SessionInfo`` and the free-form ``str`` status in ``StreamingSessionData``.
+    """
+
+    active = "active"
+    running = "running"
+    completed = "completed"
+    error = "error"
+    expired = "expired"
 
 
 class SessionInfo(BaseModel):
@@ -44,6 +95,119 @@ class SessionInfo(BaseModel):
     status: Literal["active", "completed", "expired"] = "active"
     summary: str | None = None
     streaming_token: str | None = None
+
+
+class UnifiedSessionInfo(BaseModel):
+    """Unified session metadata — merges ALL fields from ``SessionInfo`` (13 fields)
+    and ``StreamingSessionData`` (8 unique fields) into a single model.
+
+    This is the canonical session schema for the merged SessionStore V2.
+    Every field includes a ``source`` note in its docstring documenting
+    which original store it originated from.
+    """
+
+    # ---- Fields from SessionInfo (session_store.py) ----
+    session_id: str = Field(description="SDK session identifier. Source: SessionInfo")
+    repo: str = Field(
+        description="GitHub repository (owner/repo). Source: SessionInfo + StreamingSessionData"
+    )
+    thread_type: Literal["pr", "issue", "discussion"] = Field(
+        description="Thread type. Source: SessionInfo + StreamingSessionData"
+    )
+    thread_id: str = Field(
+        description="Thread number (issue/PR/discussion #). Source: SessionInfo"
+    )
+    workflow_name: str = Field(
+        description="Workflow name. Source: SessionInfo (mapped from StreamingSessionData.workflow)"
+    )
+    ref: str = Field(
+        description="Git reference (branch/tag). Source: SessionInfo + StreamingSessionData"
+    )
+    worktree_path: str = Field(
+        description="Local filesystem path to the worktree. Source: SessionInfo"
+    )
+    created_at: str = Field(
+        description="ISO 8601 timestamp of first session creation. Source: SessionInfo"
+    )
+    last_run: str = Field(
+        description="ISO 8601 timestamp of most recent run. Source: SessionInfo"
+    )
+    turn_count: int = Field(
+        default=0,
+        description="Cumulative turn count across continuations. Source: SessionInfo",
+    )
+    status: SessionStatus = Field(
+        default=SessionStatus.active,
+        description="Session lifecycle status. Source: SessionInfo + StreamingSessionData (unified)",
+    )
+    summary: str | None = Field(
+        default=None,
+        description="Conversation summary injected on resume. Source: SessionInfo",
+    )
+    streaming_token: str | None = Field(
+        default=None,
+        description="Streaming session token linking to StreamingSessionStore. "
+        "Maps to StreamingSessionData.token. Source: SessionInfo.streaming_token + StreamingSessionData.token",
+    )
+
+    # ---- Fields from StreamingSessionData (streaming_session.py) ----
+    installation_id: str = Field(
+        default="",
+        description="GitHub App installation ID. Source: StreamingSessionData",
+    )
+    initial_query: str = Field(
+        default="",
+        description="The GitHub comment that triggered this session. Source: StreamingSessionData",
+    )
+    conversation_config: str = Field(
+        default="",
+        description="JSON-encoded conversation persistence settings. Source: StreamingSessionData",
+    )
+    transcript_path: str = Field(
+        default="",
+        description="Filesystem path to the session transcript JSONL file. Source: StreamingSessionData",
+    )
+    run_count: int = Field(
+        default=1,
+        description="Number of times this session has been run (includes resume). Source: StreamingSessionData",
+    )
+    session_proxy_url: str = Field(
+        default="",
+        description="Public URL of session_proxy for GitHub comments. Source: StreamingSessionData",
+    )
+    issue_number: str = Field(
+        default="",
+        description="GitHub issue/PR number (string form). Source: StreamingSessionData",
+    )
+    user: str = Field(
+        default="",
+        description="GitHub username who triggered the session. Source: StreamingSessionData",
+    )
+
+
+class SessionStoreConfig(BaseModel):
+    """Configuration for the merged session store.
+
+    Extends the existing ``ConversationConfig`` pattern with explicit
+    streaming-aware settings. Kept separate from ``ConversationConfig``
+    so workflow-level conversation settings can evolve independently
+    from store-level infrastructure settings.
+    """
+
+    persist: bool = Field(default=False, description="Enable session persistence")
+    ttl_hours: int = Field(
+        default=DEFAULT_SESSION_TTL_HOURS,
+        description="Session TTL in hours (default from constants)",
+    )
+    max_turns: int = Field(
+        default=50, description="Max total turns across continuations"
+    )
+    auto_continue: bool = Field(
+        default=False, description="Auto-resume on replies without explicit -c flag"
+    )
+    summary_fallback: bool = Field(
+        default=True, description="Inject conversation summary when full resume fails"
+    )
 
 
 class ConversationConfig(BaseModel):
@@ -98,15 +262,29 @@ def resolve_thread_type(event_data: dict) -> Literal["pr", "issue", "discussion"
 
 
 def _session_key(repo: str, thread_type: str, thread_id: str, workflow: str) -> str:
-    """Build the Redis key for a session mapping."""
-    safe_repo = sanitize_repo_key(repo)
-    return f"session:map:{safe_repo}:{thread_type}:{thread_id}:{workflow}"
+    """Build the Redis key for a session mapping.
+
+    Deprecated: Use ``session_key()`` from ``shared.constants`` instead.
+    """
+    warnings.warn(
+        "_session_key() is deprecated — use shared.constants.session_key() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return session_key(repo, thread_type, thread_id, workflow)
 
 
 def _session_pattern(repo: str) -> str:
-    """Build a Redis SCAN pattern for all sessions of a repo."""
-    safe_repo = sanitize_repo_key(repo)
-    return f"session:map:{safe_repo}:*"
+    """Build a Redis SCAN pattern for all sessions of a repo.
+
+    Deprecated: Use ``session_pattern()`` from ``shared.constants`` instead.
+    """
+    warnings.warn(
+        "_session_pattern() is deprecated — use shared.constants.session_pattern() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return session_pattern(repo)
 
 
 class SessionStore:
@@ -138,7 +316,7 @@ class SessionStore:
         streaming_token: str | None = None,
     ) -> None:
         """Create or update a session mapping in Redis."""
-        key = _session_key(repo, thread_type, thread_id, workflow)
+        key = session_key(repo, thread_type, thread_id, workflow)
         now = datetime.now(UTC).isoformat()
 
         # Write base fields atomically — a partial write from individual
@@ -179,7 +357,7 @@ class SessionStore:
         self, repo: str, thread_type: str, thread_id: str, workflow: str
     ) -> SessionInfo | None:
         """Look up an active session, returning None if absent or expired."""
-        key = _session_key(repo, thread_type, thread_id, workflow)
+        key = session_key(repo, thread_type, thread_id, workflow)
         redis: Any = self.redis
         data = await redis.hgetall(key)
         if not data:
@@ -198,7 +376,7 @@ class SessionStore:
 
         Also cleans up the associated streaming session and lookup key.
         """
-        key = _session_key(repo, thread_type, thread_id, workflow)
+        key = session_key(repo, thread_type, thread_id, workflow)
         info = await self.get_session(repo, thread_type, thread_id, workflow)
         if info:
             if info.streaming_token:
@@ -213,7 +391,7 @@ class SessionStore:
 
     async def list_sessions(self, repo: str) -> list[SessionInfo]:
         """List all active sessions for a repository."""
-        pattern = _session_pattern(repo)
+        pattern = session_pattern(repo)
         sessions: list[SessionInfo] = []
         cursor = 0
         while True:
@@ -245,7 +423,7 @@ class SessionStore:
 
         Also propagates TTL to the associated streaming session.
         """
-        key = _session_key(repo, thread_type, thread_id, workflow)
+        key = session_key(repo, thread_type, thread_id, workflow)
         result = await self.redis.expire(key, ttl_hours * 3600)
         if not result:
             logger.debug(f"Session key {key} does not exist, skipping TTL propagation")
@@ -278,7 +456,7 @@ class SessionStore:
         summary: str,
     ) -> None:
         """Update the conversation summary for a session."""
-        key = _session_key(repo, thread_type, thread_id, workflow)
+        key = session_key(repo, thread_type, thread_id, workflow)
         redis: Any = self.redis
         try:
             await redis.hset(key, "summary", summary)
@@ -294,7 +472,7 @@ class SessionStore:
         additional_turns: int,
     ) -> None:
         """Add to the cumulative turn count after a continuation."""
-        key = _session_key(repo, thread_type, thread_id, workflow)
+        key = session_key(repo, thread_type, thread_id, workflow)
         last_run = datetime.now(UTC).isoformat()
         redis: Any = self.redis
         try:

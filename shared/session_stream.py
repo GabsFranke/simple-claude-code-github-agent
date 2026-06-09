@@ -42,8 +42,9 @@ from shared.constants import (
     HISTORY_TTL_SECONDS,
     MSG_CHANNEL,
     _now_iso,
+    history_key,
+    inbox_key,
 )
-from shared.streaming_session import _history_key, _inbox_key
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class SessionStreamBridge:
         self._token = token
         self._redis = redis
         self._channel = MSG_CHANNEL.format(token)
-        self._history_key = _history_key(token)
+        self._history_key = history_key(token)
 
     async def publish(self, msg_type: str, data: dict) -> None:
         """Publish a typed message to the session channel.
@@ -280,7 +281,7 @@ class ControlChannel:
                 return
             # Store in Redis inbox for the sandbox worker to pick up
 
-            inbox_key = _inbox_key(self._token)
+            inbox_name = inbox_key(self._token)
             message_data = json.dumps(
                 {
                     "type": "user_message",
@@ -288,8 +289,8 @@ class ControlChannel:
                     "ts": _now_iso(),
                 }
             )
-            await self._redis.rpush(inbox_key, message_data)
-            await self._redis.expire(inbox_key, DEFAULT_SESSION_TTL_SECONDS)
+            await self._redis.rpush(inbox_name, message_data)
+            await self._redis.expire(inbox_name, DEFAULT_SESSION_TTL_SECONDS)
             logger.info(
                 f"[ControlChannel] Stored user message in inbox for {self._token[:8]}..."
             )

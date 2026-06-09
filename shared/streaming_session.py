@@ -18,16 +18,17 @@ Redis keys:
 
 import json
 import logging
+import warnings
 from typing import Any, Literal, TypedDict
 
 from shared.constants import (
     DEFAULT_SESSION_TTL_SECONDS,
-    SESSION_HISTORY_KEY,
-    SESSION_INBOX_KEY,
-    SESSION_KEY,
-    SESSION_SUBSCRIBERS_KEY,
     decode_redis_hash,
+    history_key,
+    inbox_key,
     streaming_lookup_key,
+    streaming_session_key,
+    subscribers_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,19 +53,55 @@ return count
 
 
 def _session_key(token: str) -> str:
-    return SESSION_KEY.format(token)
+    """Build the Redis key for a streaming session hash.
+
+    Deprecated: Use ``streaming_session_key()`` from ``shared.constants`` instead.
+    """
+    warnings.warn(
+        "_session_key() is deprecated — use shared.constants.streaming_session_key() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return streaming_session_key(token)
 
 
 def _inbox_key(token: str) -> str:
-    return SESSION_INBOX_KEY.format(token)
+    """Build the Redis key for a session's message inbox.
+
+    Deprecated: Use ``inbox_key()`` from ``shared.constants`` instead.
+    """
+    warnings.warn(
+        "_inbox_key() is deprecated — use shared.constants.inbox_key() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return inbox_key(token)
 
 
 def _subscribers_key(token: str) -> str:
-    return SESSION_SUBSCRIBERS_KEY.format(token)
+    """Build the Redis key for a session's subscriber count.
+
+    Deprecated: Use ``subscribers_key()`` from ``shared.constants`` instead.
+    """
+    warnings.warn(
+        "_subscribers_key() is deprecated — use shared.constants.subscribers_key() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return subscribers_key(token)
 
 
 def _history_key(token: str) -> str:
-    return SESSION_HISTORY_KEY.format(token)
+    """Build the Redis key for a session's message history.
+
+    Deprecated: Use ``history_key()`` from ``shared.constants`` instead.
+    """
+    warnings.warn(
+        "_history_key() is deprecated — use shared.constants.history_key() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return history_key(token)
 
 
 class StreamingSessionData(TypedDict, total=False):
@@ -132,7 +169,7 @@ class StreamingSessionStore:
             conversation_config: JSON-encoded conversation persistence settings
             session_id: SDK session ID (empty on first creation, updated after each run)
         """
-        key = _session_key(token)
+        key = streaming_session_key(token)
         data = {
             "token": token,
             "repo": repo,
@@ -235,7 +272,7 @@ class StreamingSessionStore:
         Returns:
             Session dict, or None if the token doesn't exist / is expired.
         """
-        key = _session_key(token)
+        key = streaming_session_key(token)
         data = await self._redis.hgetall(key)
         if not data:
             return None
@@ -261,7 +298,7 @@ class StreamingSessionStore:
         status change to avoid a race where a resume job reads an
         empty session_id between set_completed and update_session_id.
         """
-        key = _session_key(token)
+        key = streaming_session_key(token)
         status = "error" if is_error else "completed"
         if session_id:
             await self._redis.hset(
@@ -281,7 +318,7 @@ class StreamingSessionStore:
         These fields are repopulated by _save_session() when the new
         run completes.
         """
-        key = _session_key(token)
+        key = streaming_session_key(token)
         await self._redis.hset(
             key,
             mapping={
@@ -297,21 +334,21 @@ class StreamingSessionStore:
 
     async def delete_session(self, token: str) -> None:
         """Delete a streaming session entirely."""
-        key = _session_key(token)
+        key = streaming_session_key(token)
         await self._redis.delete(key)
-        inbox = _inbox_key(token)
+        inbox = inbox_key(token)
         await self._redis.delete(inbox)
-        subscribers = _subscribers_key(token)
+        subscribers = subscribers_key(token)
         await self._redis.delete(subscribers)
         logger.info(f"[StreamingSessionStore] Deleted session {token[:8]}...")
 
     async def set_ttl(self, token: str, ttl_seconds: int) -> None:
         """Set TTL on a streaming session (for cascading from SessionStore)."""
-        key = _session_key(token)
+        key = streaming_session_key(token)
         await self._redis.expire(key, ttl_seconds)
-        inbox = _inbox_key(token)
+        inbox = inbox_key(token)
         await self._redis.expire(inbox, ttl_seconds)
-        subscribers = _subscribers_key(token)
+        subscribers = subscribers_key(token)
         await self._redis.expire(subscribers, ttl_seconds)
         logger.debug(
             f"[StreamingSessionStore] Set TTL {ttl_seconds}s on session {token[:8]}..."
@@ -319,7 +356,7 @@ class StreamingSessionStore:
 
     async def increment_subscribers(self, token: str) -> int:
         """Increment subscriber count atomically. Returns new count."""
-        key = _subscribers_key(token)
+        key = subscribers_key(token)
         count = await self._redis.eval(
             _INCR_SUBSCRIBERS_LUA, 1, key, str(DEFAULT_SESSION_TTL_SECONDS)
         )
@@ -327,13 +364,13 @@ class StreamingSessionStore:
 
     async def decrement_subscribers(self, token: str) -> int:
         """Decrement subscriber count atomically (floor 0). Returns new count."""
-        key = _subscribers_key(token)
+        key = subscribers_key(token)
         count = await self._redis.eval(_DECR_SUBSCRIBERS_LUA, 1, key)
         return int(count)
 
     async def has_subscribers(self, token: str) -> bool:
         """Return True if at least one browser is connected."""
-        key = _subscribers_key(token)
+        key = subscribers_key(token)
         raw = await self._redis.get(key)
         if raw is None:
             return False
@@ -357,7 +394,7 @@ class StreamingSessionStore:
         Returns:
             List of message dicts (already parsed JSON), oldest first.
         """
-        key = _history_key(token)
+        key = history_key(token)
         raw_messages = await self._redis.lrange(key, 0, -1)
         result = []
         for raw in raw_messages:
@@ -374,7 +411,7 @@ class StreamingSessionStore:
         Called by sandbox_worker after each SDK run so the session_proxy
         can include the correct session_id when creating a resume job.
         """
-        key = _session_key(token)
+        key = streaming_session_key(token)
         await self._redis.hset(key, "session_id", session_id)
         logger.debug(f"[StreamingSessionStore] Updated session_id for {token[:8]}...")
 
@@ -384,7 +421,7 @@ class StreamingSessionStore:
         Called by sandbox_worker after each SDK run so the session_proxy
         can load history from the transcript file.
         """
-        key = _session_key(token)
+        key = streaming_session_key(token)
         await self._redis.hset(key, "transcript_path", path)
         logger.debug(
             f"[StreamingSessionStore] Updated transcript_path for {token[:8]}..."
@@ -392,7 +429,7 @@ class StreamingSessionStore:
 
     async def increment_run_count(self, token: str) -> int:
         """Increment the run count. Returns new count."""
-        key = _session_key(token)
+        key = streaming_session_key(token)
         count = await self._redis.hincrby(key, "run_count", 1)
         return int(count)
 
@@ -402,7 +439,7 @@ class StreamingSessionStore:
 
     async def push_inbox_message(self, token: str, content: str) -> None:
         """Push a user message into the session inbox."""
-        inbox = _inbox_key(token)
+        inbox = inbox_key(token)
         message_data = json.dumps({"type": "user_message", "content": content})
         await self._redis.rpush(inbox, message_data)
         await self._redis.expire(inbox, DEFAULT_SESSION_TTL_SECONDS)
@@ -413,7 +450,7 @@ class StreamingSessionStore:
         Returns:
             List of message content strings, oldest first.
         """
-        inbox = _inbox_key(token)
+        inbox = inbox_key(token)
 
         lua_drain = """
         local items = redis.call('LRANGE', KEYS[1], 0, -1)

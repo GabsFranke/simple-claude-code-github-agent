@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from shared.constants import DEFAULT_SESSION_TTL_HOURS
-from shared.session_store import SessionStore, _session_key, resolve_thread_type
+from shared.constants import DEFAULT_SESSION_TTL_HOURS, session_key
+from shared.session_store import SessionStore, resolve_thread_type
 
 
 def _make_redis():
@@ -74,7 +74,7 @@ class TestSessionStoreSaveSession:
         assert redis.hset.call_count == 1
         key = redis.hset.call_args[0][0]
         mapping = redis.hset.call_args[1]["mapping"]
-        assert key == _session_key("owner/repo", "issue", "42", "review-pr")
+        assert key == session_key("owner/repo", "issue", "42", "review-pr")
         assert mapping["status"] == "active"
         assert mapping["session_id"] == "sess-123"
         assert mapping["ref"] == "main"
@@ -236,7 +236,7 @@ class TestSessionStoreGetSession:
 
 class TestSessionStoreCloseSession:
     @pytest.mark.asyncio
-    async def test_deletes_session_key(self):
+    async def test_deletessession_key(self):
         redis = _make_redis()
         store = SessionStore(redis_client=redis)
 
@@ -406,7 +406,7 @@ class TestSessionStoreListSessions:
             return_value=(
                 0,
                 [
-                    _session_key("owner/repo", "issue", "42", "review-pr"),
+                    session_key("owner/repo", "issue", "42", "review-pr"),
                 ],
             )
         )
@@ -445,8 +445,8 @@ class TestSessionStoreListSessions:
             return_value=(
                 0,
                 [
-                    _session_key("owner/repo", "issue", "42", "review-pr"),
-                    _session_key("owner/repo", "issue", "43", "review-pr"),
+                    session_key("owner/repo", "issue", "42", "review-pr"),
+                    session_key("owner/repo", "issue", "43", "review-pr"),
                 ],
             )
         )
