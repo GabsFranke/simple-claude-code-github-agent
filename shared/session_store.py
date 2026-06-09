@@ -141,21 +141,23 @@ class SessionStore:
         key = _session_key(repo, thread_type, thread_id, workflow)
         now = datetime.now(UTC).isoformat()
 
-        # Set fields individually (each hset is atomic, but the full update is not atomic across calls)
-        session_data = {
-            "session_id": session_id,
-            "repo": repo,
-            "thread_type": thread_type,
-            "thread_id": str(thread_id),
-            "workflow_name": workflow,
-            "ref": ref,
-            "worktree_path": str(worktree_path),
-            "last_run": now,
-            "status": "active",
-        }
+        # Write base fields atomically — a partial write from individual
+        # HSET calls would cause get_session() to return None on crash.
         redis: Any = self.redis
-        for field, value in session_data.items():
-            await redis.hset(key, field, str(value))
+        await redis.hset(
+            key,
+            mapping={
+                "session_id": str(session_id),
+                "repo": str(repo),
+                "thread_type": str(thread_type),
+                "thread_id": str(thread_id),
+                "workflow_name": str(workflow),
+                "ref": str(ref),
+                "worktree_path": str(worktree_path),
+                "last_run": str(now),
+                "status": "active",
+            },
+        )
         # Preserve created_at if it exists, otherwise set it
         await redis.hsetnx(key, "created_at", now)
         # Accumulate turn_count atomically

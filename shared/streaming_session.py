@@ -274,9 +274,22 @@ class StreamingSessionStore:
     async def set_running(
         self, token: str, ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     ) -> None:
-        """Reset session status to running (for auto-continue)."""
+        """Reset session status to running (for auto-continue or resume).
+
+        Clears stale transcript_path and session_id from the previous run
+        so load_history() won't return messages from a different run.
+        These fields are repopulated by _save_session() when the new
+        run completes.
+        """
         key = _session_key(token)
-        await self._redis.hset(key, "status", "running")
+        await self._redis.hset(
+            key,
+            mapping={
+                "status": "running",
+                "transcript_path": "",
+                "session_id": "",
+            },
+        )
         await self._redis.expire(key, ttl_seconds)
         logger.info(
             f"[StreamingSessionStore] Session {token[:8]}... -> running (auto-continue)"

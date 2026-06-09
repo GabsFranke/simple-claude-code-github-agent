@@ -76,15 +76,19 @@ class SessionStreamBridge:
         Also appends to a short-lived Redis history so browsers can load
         recent messages on connect (fallback when transcript isn't available
         yet for a running session). Transcripts are the primary history source.
+
+        History is written FIRST so that browsers loading history during
+        an active run never hit a gap between the pub/sub event reaching
+        live subscribers and the message being persisted.
         """
         payload = json.dumps({"type": msg_type, "data": data, "ts": _now_iso()})
         try:
-            await self._redis.publish(self._channel, payload)
-            # Short-lived Redis history (fallback for running sessions
-            # before transcript is written). Transcripts are primary.
+            # Persist to Redis history FIRST so load_history() always
+            # sees messages that were published before subscription starts.
             await self._redis.rpush(self._history_key, payload)
             await self._redis.ltrim(self._history_key, -HISTORY_MAX, -1)
             await self._redis.expire(self._history_key, HISTORY_TTL_SECONDS)
+            await self._redis.publish(self._channel, payload)
         except Exception as e:
             logger.warning(f"[StreamBridge] Failed to publish to {self._channel}: {e}")
 

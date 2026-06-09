@@ -71,7 +71,13 @@ class TestSessionStoreSaveSession:
             ref="main",
         )
 
-        assert redis.hset.call_count == 9
+        assert redis.hset.call_count == 1
+        key = redis.hset.call_args[0][0]
+        mapping = redis.hset.call_args[1]["mapping"]
+        assert key == _session_key("owner/repo", "issue", "42", "review-pr")
+        assert mapping["status"] == "active"
+        assert mapping["session_id"] == "sess-123"
+        assert mapping["ref"] == "main"
         assert redis.hsetnx.call_count == 1
         _, field, _ = redis.hsetnx.call_args[0]
         assert field == "created_at"

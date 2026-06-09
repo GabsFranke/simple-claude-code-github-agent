@@ -313,17 +313,38 @@ def _in_correct_workdir(path: Path, workflow: str) -> bool:
 async def load_history(
     session: dict[str, str], store: StreamingSessionStore, token: str
 ) -> list[dict]:
-    """Load conversation history — transcript file first, Redis fallback.
+    """Load conversation history — branched on session status.
 
-    For a given streaming session, tries to recover the conversation
-    history in this order:
-      1. Direct transcript_path stored in the session
-      2. Transcript found via session_id lookup
-      3. Redis short-lived history buffer
-      4. Repo-based transcript search
+    RUNNING sessions: only Redis history is live. Transcript paths and
+    session_ids point to the PREVIOUS run and must not be used.
 
-    When a transcript is discovered via session_id or repo lookup,
-    the path is persisted back to the session store for future lookups.
+    COMPLETED/ERROR/UNKNOWN sessions: transcript is the durable source,
+    with Redis history and repo-based search as fallbacks.
+    """
+    status = session.get("status", "")
+
+    if status == "running":
+        redis_history = await store.get_history(token)
+        if redis_history:
+            logger.info(
+                f"[WS] Using Redis history for running session {token[:8]}... "
+                f"({len(redis_history)} messages)"
+            )
+        else:
+            logger.debug(
+                f"[WS] No Redis history yet for running session {token[:8]}..."
+            )
+        return redis_history
+
+    return await _load_completed_history(session, store, token)
+
+
+async def _load_completed_history(
+    session: dict[str, str], store: StreamingSessionStore, token: str
+) -> list[dict]:
+    """Load history for completed/error/unknown sessions.
+
+    Priority chain: transcript_path → session_id transcript → Redis → repo search.
     """
     repo = session.get("repo", "")
     issue_number_str = session.get("issue_number", "")
@@ -332,7 +353,7 @@ async def load_history(
     session_id = session.get("session_id", "")
 
     logger.debug(
-        f"[WS] load_history token={token[:8]}... "
+        f"[WS] _load_completed_history token={token[:8]}... "
         f"repo={repo!r} issue={issue_number_str!r} workflow={workflow!r} "
         f"transcript_path={transcript_path!r} "
         f"session_id={session_id[:8] if session_id else ''!r}..."

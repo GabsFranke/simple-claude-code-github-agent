@@ -26,7 +26,7 @@ from shared.constants import (
 )
 from shared.context_builder import generate_structural_context
 from shared.sdk_executor import execute_sdk
-from shared.sdk_factory import SDKOptionsBuilder
+from shared.sdk_factory import SDKOptionsBuilder, _get_model_from_settings
 from shared.session_store import SessionStore
 from shared.utils import build_session_url
 from shared.worktree_lock import WorktreeKey, WorktreeLock
@@ -431,7 +431,10 @@ class JobProcessor:
             logger.debug("CodeGraph init skipped: %s", e)
 
     async def _execute_sdk_loop(self):
-        model = os.getenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-20250514")
+        model = (
+            _get_model_from_settings("ANTHROPIC_DEFAULT_SONNET_MODEL")
+            or "claude-sonnet-4-20250514"
+        )
         github_token = self.job_data["github_token"]
         system_context = self.job_data.get("system_context")
         claude_md = self.job_data.get("claude_md")
@@ -840,6 +843,7 @@ class JobProcessor:
                     repo=self.repo,
                     issue_number=self.issue_number,
                     workflow=self.workflow_name,
+                    session_id=self.session_id,
                 )
                 err_bridge = SessionStreamBridge(
                     self.job_data["session_token"], self.job_queue.redis

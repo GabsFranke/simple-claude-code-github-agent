@@ -22,6 +22,18 @@ async def configure_git(workspace: str, github_token: str) -> None:
     Sets up a per-job credential store, configures user.name/user.email,
     and enables submodule authentication via global credential helper.
     """
+    # Validate the workspace is a valid git repo before running git commands
+    code, _, _ = await execute_git_command(
+        ["git", "-C", workspace, "rev-parse", "--git-dir"]
+    )
+    if code != 0:
+        raise WorktreeCreationError(
+            f"Workspace {workspace} is not a valid git repository. "
+            "The worktree may have been corrupted (e.g., after container restart). "
+            "Ensure the worktree directory has a valid .git file pointing to "
+            "the bare repository."
+        )
+
     credentials_file = os.path.join(workspace, ".git-credentials")
     # Set worktree-level credential helper for primary repo operations
     config_code, _, config_err = await execute_git_command(

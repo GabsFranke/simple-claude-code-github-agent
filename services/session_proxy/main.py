@@ -41,6 +41,7 @@ from services.session_proxy.transcript_loader import (
 from shared.constants import (
     CTL_CHANNEL,
     DEFAULT_SESSION_TTL_HOURS,
+    DEFAULT_SESSION_TTL_SECONDS,
     JOB_DATA_PREFIX,
     JOB_STATUS_PREFIX,
     JOB_TTL_SECONDS,
@@ -638,14 +639,15 @@ async def websocket_session(
         f"{owner}/{repo}/{thread_type_segment}/{number}/{workflow} (token={token[:8]}...)"
     )
 
-    # ── Shared live mode: bidirectional streaming until browser disconnects ──
-    session_status = session.get("status", "unknown") if session else "unknown"
-
     try:
-        await asyncio.gather(
+        results = await asyncio.gather(
             _redis_to_ws(websocket, token),
-            _ws_to_redis(websocket, token, session_status),
+            _ws_to_redis(websocket, token),
+            return_exceptions=True,
         )
+        for r in results:
+            if isinstance(r, BaseException) and not isinstance(r, WebSocketDisconnect):
+                logger.error(f"[WS] Stream direction failed for {token[:8]}...: {r}")
     except WebSocketDisconnect:
         logger.info(f"[WS] Client disconnected from session {token[:8]}...")
     except Exception as e:
@@ -658,28 +660,65 @@ async def websocket_session(
 async def _redis_to_ws(websocket: WebSocket, token: str) -> None:
     """Forward Redis pub/sub messages to the WebSocket client.
 
-    The connection stays open across agent runs — when a session
-    completes, the status changes to "completed" but the WebSocket
-    persists so the user can send a message to re-invoke.
+    Reconnects with exponential backoff if the Redis pub/sub connection
+    drops, mirroring ControlChannel._listen().  Raises on max failures
+    so the caller (_ws handler) can decide whether to tear down the
+    WebSocket.
     """
     channel = MSG_CHANNEL.format(token)
+    max_retries = 5
+    backoff = [1, 2, 4, 8, 16]
 
-    pubsub = get_redis().pubsub()
-    await pubsub.subscribe(channel)
-    logger.info(f"[WS] Subscribed to Redis channel {channel}")
+    for attempt in range(max_retries + 1):
+        pubsub = get_redis().pubsub()
+        try:
+            await pubsub.subscribe(channel)
+            if attempt == 0:
+                logger.info(f"[WS] Subscribed to Redis channel {channel}")
+            else:
+                logger.info(
+                    f"[WS] Re-subscribed to Redis channel {channel} "
+                    f"(attempt {attempt}/{max_retries})"
+                )
 
-    try:
-        async for raw in pubsub.listen():
-            if raw["type"] != "message":
-                continue
-            data = raw["data"]
-            text = data.decode() if isinstance(data, bytes) else data
-            await websocket.send_text(text)
-            # Don't close the WebSocket on session completion —
-            # the connection persists for future agent runs.
-    finally:
-        await pubsub.unsubscribe(channel)
-        await pubsub.close()
+            async for raw in pubsub.listen():
+                if raw["type"] != "message":
+                    continue
+                data = raw["data"]
+                text = data.decode() if isinstance(data, bytes) else data
+                await websocket.send_text(text)
+                # Don't close the WebSocket on session completion —
+                # the connection persists for future agent runs.
+
+            # pubsub.listen() exhausted — connection dropped
+            if attempt >= max_retries:
+                logger.error("[WS] Redis pub/sub closed, max retries exceeded")
+                raise ConnectionError("Redis pub/sub connection lost")
+            delay = backoff[attempt]
+            logger.warning(
+                f"[WS] Redis pub/sub closed (attempt {attempt + 1}/{max_retries}), "
+                f"reconnecting in {delay}s..."
+            )
+            await asyncio.sleep(delay)
+
+        except Exception as e:
+            if attempt >= max_retries:
+                logger.error(
+                    f"[WS] Redis pub/sub failed after {max_retries} retries: {e}"
+                )
+                raise
+            delay = backoff[attempt]
+            logger.warning(
+                f"[WS] Redis pub/sub error (attempt {attempt + 1}/{max_retries}): {e}. "
+                f"Reconnecting in {delay}s..."
+            )
+            await asyncio.sleep(delay)
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+                await pubsub.close()
+            except Exception:
+                pass
 
 
 async def _rehydrate_transcript_session(
@@ -781,12 +820,13 @@ async def _rehydrate_transcript_session(
     return None  # WebSocket disconnected
 
 
-async def _ws_to_redis(websocket: WebSocket, token: str, session_status: str) -> None:
+async def _ws_to_redis(websocket: WebSocket, token: str) -> None:
     """Forward browser WebSocket messages to Redis control channel.
 
     For inject_message type: if the session is completed/error, creates
     a resume job instead of publishing to the control channel (since
-    no worker is listening on a completed session).
+    no worker is listening on a completed session). Session status is
+    re-fetched from Redis on each message to avoid stale reads.
 
     When the session is running, publishes the user message to the MSG
     channel so the browser sees it echoed back (the sandbox_worker's
@@ -827,6 +867,8 @@ async def _ws_to_redis(websocket: WebSocket, token: str, session_status: str) ->
                 # Session is running — echo the user message to the
                 # MSG channel so the browser displays it, then forward
                 # to the control channel for the sandbox_worker.
+                # Also persist to Redis history so the message survives
+                # a browser refresh before the worker picks it up.
                 user_msg = json.dumps(
                     {
                         "type": "user_message",
@@ -835,6 +877,10 @@ async def _ws_to_redis(websocket: WebSocket, token: str, session_status: str) ->
                     }
                 )
                 await redis.publish(msg_channel, user_msg)
+                await redis.rpush(SESSION_HISTORY_KEY.format(token), user_msg)  # type: ignore[misc]
+                await redis.expire(
+                    SESSION_HISTORY_KEY.format(token), DEFAULT_SESSION_TTL_SECONDS
+                )
 
             # Forward to Redis control channel
             await redis.publish(channel, text)

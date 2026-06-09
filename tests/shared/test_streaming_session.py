@@ -253,10 +253,12 @@ class TestSetRunning:
         await store.set_running("test-token", ttl_seconds=3600)
 
         assert redis.hset.call_count == 1
-        key, field, value = redis.hset.call_args[0]
+        key = redis.hset.call_args[0][0]
+        mapping = redis.hset.call_args[1]["mapping"]
         assert key == "session:stream:test-token"
-        assert field == "status"
-        assert value == "running"
+        assert mapping["status"] == "running"
+        assert mapping["transcript_path"] == ""
+        assert mapping["session_id"] == ""
         assert redis.expire.call_count == 1
 
 

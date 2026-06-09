@@ -4,6 +4,8 @@ This module provides a builder pattern for constructing ClaudeAgentOptions
 with sensible defaults and flexible customization for different worker types.
 """
 
+# pylint: disable=too-many-lines
+
 import json
 import logging
 import os
@@ -19,6 +21,28 @@ logger = logging.getLogger(__name__)
 
 # Total system prompt budget in tokens
 SYSTEM_PROMPT_BUDGET = 12_000
+
+
+def _get_model_from_settings(env_key: str) -> str | None:
+    """Read a model name from ~/.claude/settings.json env section.
+
+    Precedence: settings.json env > OS env var > None.
+
+    The Claude Agent SDK reads settings.json via its setting_sources
+    parameter, but we set the model explicitly via ClaudeAgentOptions,
+    so we must resolve it ourselves with the same precedence.
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if settings_path.exists():
+        try:
+            with open(settings_path, encoding="utf-8") as f:
+                settings = json.load(f)
+            value = settings.get("env", {}).get(env_key)
+            if value:
+                return str(value)
+        except Exception:
+            pass
+    return os.getenv(env_key)
 
 
 def _discover_host_mcp_names(cwd: str | None = None) -> list[str]:
@@ -46,6 +70,7 @@ def _discover_host_mcp_names(cwd: str | None = None) -> list[str]:
     return sorted(names)
 
 
+# pylint: disable=too-many-public-methods
 class SDKOptionsBuilder:
     """Composable builder for ClaudeAgentOptions.
 
@@ -108,24 +133,26 @@ class SDKOptionsBuilder:
         return self
 
     def with_sonnet(self) -> "SDKOptionsBuilder":
-        """Use Sonnet model from environment (default for main agent work).
+        """Use Sonnet model from settings.json / env (default for main agent work).
 
         Returns:
             Self for method chaining
         """
-        self._model = os.getenv(
-            "ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-20250514"
+        self._model = (
+            _get_model_from_settings("ANTHROPIC_DEFAULT_SONNET_MODEL")
+            or "claude-sonnet-4-20250514"
         )
         return self
 
     def with_haiku(self) -> "SDKOptionsBuilder":
-        """Use Haiku model from environment (default for lightweight tasks).
+        """Use Haiku model from settings.json / env (default for lightweight tasks).
 
         Returns:
             Self for method chaining
         """
-        self._model = os.getenv(
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001"
+        self._model = (
+            _get_model_from_settings("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+            or "claude-haiku-4-5-20251001"
         )
         return self
 
@@ -780,8 +807,9 @@ class SDKOptionsBuilder:
         """
         # Default to Sonnet if no model specified
         if not self._model:
-            self._model = os.getenv(
-                "ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-20250514"
+            self._model = (
+                _get_model_from_settings("ANTHROPIC_DEFAULT_SONNET_MODEL")
+                or "claude-sonnet-4-20250514"
             )
 
         # Assemble final system prompt with budget enforcement
@@ -971,16 +999,16 @@ def _truncate_text(text: str, max_tokens: int, from_top: bool = False) -> str | 
             return None
 
         return "... (older comments truncated)\n" + "\n".join(result_lines)
-    else:
-        # Remove lines from the end, keeping the beginning
-        result_lines = []
-        for line in lines:
-            candidate = "\n".join(result_lines + [line])
-            if _estimate(candidate) > max_tokens:
-                break
-            result_lines.append(line)
 
-        if not result_lines:
-            return None
+    # Remove lines from the end, keeping the beginning
+    result_lines = []
+    for line in lines:
+        candidate = "\n".join(result_lines + [line])
+        if _estimate(candidate) > max_tokens:
+            break
+        result_lines.append(line)
 
-        return "\n".join(result_lines) + "\n... (truncated)"
+    if not result_lines:
+        return None
+
+    return "\n".join(result_lines) + "\n... (truncated)"

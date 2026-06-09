@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import uuid
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import httpx
 from langfuse import Langfuse
@@ -15,6 +15,7 @@ from shared import GitHubAuthService, JobQueue
 from shared.session_store import SessionStore, resolve_thread_type
 from shared.streaming_session import StreamingSessionStore
 from shared.utils import build_session_url
+from shared.worktree_lock import WorktreeKey, WorktreeLock
 from workflows import WorkflowEngine
 
 from .repository_context_loader import RepositoryContextLoader
@@ -46,7 +47,45 @@ def _parse_session_flag(user_query: str) -> tuple[str, str]:
 
 
 # Type alias for process return value
-ProcessResult = str | Literal["ignored"]
+ProcessResult = str | Literal["ignored", "injected", "queued"]
+
+
+async def _inject_into_running_session(
+    token: str,
+    user_query: str,
+    redis: Any,
+    repo: str,
+    thread_type: Literal["pr", "issue", "discussion"],
+    issue_number: int,
+    workflow: str,
+) -> None:
+    """Push a follow-up message into a running session and interrupt the agent.
+
+    This is the core of the conversation-continuity flow: when a new message
+    arrives via a GitHub comment while the agent is already running, instead
+    of creating a duplicate job, we inject the message directly into the
+    running session's inbox and trigger an interrupt.
+
+    The worker's auto-continue loop will:
+      1. Detect the interrupt (via cancel signal / user_interrupt_event)
+      2. Cancel the current SDK turn
+      3. Pop the follow-up message from the inbox
+      4. Start a new SDK turn with the follow-up as prompt
+    """
+    # 1. Push to inbox → worker drains it in the auto-continue loop
+    store = StreamingSessionStore(redis)
+    await store.push_inbox_message(token, user_query)
+
+    # 2. Send cancel signal → interrupts current SDK turn immediately
+    key = WorktreeKey(repo, thread_type, str(issue_number), workflow)
+    lock = WorktreeLock(redis, key)
+    await lock.send_cancel_signal()
+
+    # 3. Publish to message stream → browser displays + history persists
+    from shared.session_stream import SessionStreamBridge
+
+    bridge = SessionStreamBridge(token, redis)
+    await bridge.publish_user_message(user_query)
 
 
 class RequestProcessor:
@@ -364,7 +403,70 @@ class RequestProcessor:
                     await self.job_queue.ensure_connected()
                     streaming_store = StreamingSessionStore(self.job_queue.redis)
 
-                    # Find existing streaming session (any status) for stable URLs
+                    # Find existing streaming session for stable URLs.
+                    # Prefer find_active_session (running only) to avoid
+                    # racing with session_proxy's resume handler which
+                    # independently checks status and creates resume jobs.
+                    existing_token = await streaming_store.find_active_session(
+                        repo=repo,
+                        issue_number=issue_number or 0,
+                        workflow=workflow_name,
+                        thread_type=thread_type,
+                    )
+                    if existing_token:
+                        # Active session exists — this is a follow-up message
+                        # sent while the agent is already working.
+                        # Check if a worker is actually processing (lock held).
+                        wt_key = WorktreeKey(
+                            repo=repo,
+                            thread_type=thread_type,
+                            thread_id=str(issue_number or 0),
+                            workflow=workflow_name,
+                        )
+                        lock = WorktreeLock(self.job_queue.redis, wt_key)
+                        lock_info = await lock.get_lock_info()
+
+                        if lock_info:
+                            # Worker is running → inject as follow-up, interrupt
+                            await _inject_into_running_session(
+                                token=existing_token,
+                                user_query=user_query,
+                                redis=self.job_queue.redis,
+                                repo=repo,
+                                thread_type=thread_type,
+                                issue_number=issue_number or 0,
+                                workflow=workflow_name,
+                            )
+                            logger.info(
+                                f"[Streaming] Injected follow-up into running session "
+                                f"{existing_token[:8]}... for {repo}#{issue_number}"
+                            )
+                            return "injected"
+
+                        # Session is running but no active worker.
+                        # This happens when a job is pending (worker hasn't
+                        # started yet) or the worker crashed mid-run.
+                        # Push the message to the inbox — the worker will
+                        # pick it up after it starts or the reclaim will
+                        # re-queue the job and find it later.
+                        await streaming_store.push_inbox_message(
+                            existing_token, user_query
+                        )
+                        # Also publish for browser display
+                        from shared.session_stream import SessionStreamBridge
+
+                        bridge = SessionStreamBridge(
+                            token=existing_token,
+                            redis=self.job_queue.redis,
+                        )
+                        await bridge.publish_user_message(user_query)
+                        logger.info(
+                            f"[Streaming] Queued follow-up for pending session "
+                            f"{existing_token[:8]}... for {repo}#{issue_number}"
+                        )
+                        return "queued"
+
+                    # Try completed/error sessions as fallback
                     existing_token = await streaming_store.find_session(
                         repo=repo,
                         issue_number=issue_number or 0,
@@ -373,7 +475,6 @@ class RequestProcessor:
                     )
                     if existing_token:
                         session_token = existing_token
-                        # Set session back to running for the new invocation
                         ttl_hours = conversation_config.ttl_hours
                         await streaming_store.set_running(
                             session_token, ttl_seconds=ttl_hours * 3600
@@ -385,39 +486,39 @@ class RequestProcessor:
                     else:
                         # Generate a new session token
                         session_token = str(uuid.uuid4())
-                        ttl_hours = conversation_config.ttl_hours
-                        installation_id = event_data.get("installation_id", "")
-                        conversation_config_json = json.dumps(
-                            conversation_config.model_dump()
-                        )
-                        # Build the full human-readable URL (base + path)
-                        owner, _, repo_name = repo.partition("/")
-                        full_session_url = build_session_url(
-                            session_proxy_url,
-                            owner,
-                            repo_name,
-                            thread_type,
-                            issue_number or 0,
-                            workflow_name,
-                        )
-                        await streaming_store.create_session(
-                            token=session_token,
-                            repo=repo,
-                            issue_number=issue_number or 0,
-                            workflow=workflow_name,
-                            session_proxy_url=full_session_url,
-                            ttl_seconds=ttl_hours * 3600,
-                            installation_id=installation_id,
-                            initial_query=user_query,
-                            thread_type=thread_type,
-                            ref=final_ref,
-                            user=user,
-                            conversation_config=conversation_config_json,
-                        )
-                        logger.info(
-                            f"[Streaming] Created session {session_token[:8]}... "
-                            f"for {repo}#{issue_number}"
-                        )
+                    ttl_hours = conversation_config.ttl_hours
+                    installation_id = event_data.get("installation_id", "")
+                    conversation_config_json = json.dumps(
+                        conversation_config.model_dump()
+                    )
+                    # Build the full human-readable URL (base + path)
+                    owner, _, repo_name = repo.partition("/")
+                    full_session_url = build_session_url(
+                        session_proxy_url,
+                        owner,
+                        repo_name,
+                        thread_type,
+                        issue_number or 0,
+                        workflow_name,
+                    )
+                    await streaming_store.create_session(
+                        token=session_token,
+                        repo=repo,
+                        issue_number=issue_number or 0,
+                        workflow=workflow_name,
+                        session_proxy_url=full_session_url,
+                        ttl_seconds=ttl_hours * 3600,
+                        installation_id=installation_id,
+                        initial_query=user_query,
+                        thread_type=thread_type,
+                        ref=final_ref,
+                        user=user,
+                        conversation_config=conversation_config_json,
+                    )
+                    logger.info(
+                        f"[Streaming] Created session {session_token[:8]}... "
+                        f"for {repo}#{issue_number}"
+                    )
 
                     # Publish initial user query to the session history
                     if user_query and session_token:
