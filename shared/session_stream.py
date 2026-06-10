@@ -35,7 +35,7 @@ import json
 import logging
 from typing import Any
 
-from shared.constants import (
+from shared.constants import (  # noqa: E402
     CTL_CHANNEL,
     DEFAULT_SESSION_TTL_SECONDS,
     HISTORY_MAX,
@@ -69,7 +69,6 @@ class SessionStreamBridge:
         self._token = token
         self._redis = redis
         self._channel = MSG_CHANNEL.format(token)
-        self._history_key = history_key(token)
 
     async def publish(self, msg_type: str, data: dict) -> None:
         """Publish a typed message to the session channel.
@@ -86,9 +85,10 @@ class SessionStreamBridge:
         try:
             # Persist to Redis history FIRST so load_history() always
             # sees messages that were published before subscription starts.
-            await self._redis.rpush(self._history_key, payload)
-            await self._redis.ltrim(self._history_key, -HISTORY_MAX, -1)
-            await self._redis.expire(self._history_key, HISTORY_TTL_SECONDS)
+            hkey = history_key(self._token)
+            await self._redis.rpush(hkey, payload)
+            await self._redis.ltrim(hkey, -HISTORY_MAX, -1)
+            await self._redis.expire(hkey, HISTORY_TTL_SECONDS)
             await self._redis.publish(self._channel, payload)
         except Exception as e:
             logger.warning(f"[StreamBridge] Failed to publish to {self._channel}: {e}")
