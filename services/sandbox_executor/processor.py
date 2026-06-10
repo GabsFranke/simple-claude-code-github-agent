@@ -23,6 +23,7 @@ from shared.constants import (
     CLOSED_SESSION_TTL_HOURS,
     FALLBACK_CONVERSATION_TTL_HOURS,
     MAX_AUTO_CONTINUES as MAX_AUTO_CONTINUES_CONST,
+    session_dedup_key,
 )
 from shared.context_builder import generate_structural_context
 from shared.sdk_executor import execute_sdk
@@ -58,6 +59,7 @@ class JobProcessor:
         self.streaming_bridge: Any = None
         self.streaming_control: Any = None
         self.user_interrupt_event: asyncio.Event = asyncio.Event()
+        self.session_service = SessionStore(self.job_queue.redis)
 
         self.repo = job_data.get("repo", "unknown")
         self.issue_number = job_data.get("issue_number", 0)
@@ -453,7 +455,6 @@ class JobProcessor:
             session_token = self.job_data["session_token"]
             try:
                 from shared.session_stream import ControlChannel, SessionStreamBridge
-                from shared.streaming_session import StreamingSessionStore
 
                 self.streaming_bridge = SessionStreamBridge(
                     token=session_token, redis=self.job_queue.redis
@@ -470,12 +471,10 @@ class JobProcessor:
                     issue_number=self.issue_number,
                     workflow=self.workflow_name,
                 )
-                session_meta = await StreamingSessionStore(
-                    self.job_queue.redis
-                ).get_session(session_token)
-                run_count = int(
-                    str(session_meta.get("run_count", "1")) if session_meta else "1"
+                session_meta = await self.session_service.get_streaming_session(
+                    session_token
                 )
+                run_count = session_meta.run_count if session_meta else 1
                 await self.streaming_bridge.publish(
                     "run_start",
                     {"run_number": run_count, "session_id": self.session_id},
@@ -646,10 +645,7 @@ class JobProcessor:
                 raise RuntimeError("SDK execution returned no result")
 
             if self.streaming_bridge is not None and self.job_data.get("session_token"):
-                from shared.streaming_session import StreamingSessionStore
-
-                store = StreamingSessionStore(self.job_queue.redis)
-                inbox_messages = await store.pop_inbox_messages(
+                inbox_messages = await self.session_service.pop_inbox_messages(
                     self.job_data["session_token"]
                 )
 
@@ -667,7 +663,9 @@ class JobProcessor:
                         issue_number=self.issue_number,
                         workflow=self.workflow_name,
                     )
-                    await store.set_running(self.job_data["session_token"])
+                    await self.session_service.set_running(
+                        self.job_data["session_token"]
+                    )
                     logger.info(
                         f"[Streaming] Auto-continue #{continue_count + 1} for {self.job_data['session_token'][:8]}..."
                     )
@@ -690,10 +688,7 @@ class JobProcessor:
                 is_error = (result or {}).get("is_error", False)
                 new_session_id = (result or {}).get("session_id") if result else None
                 if self.job_data.get("session_token"):
-                    from shared.streaming_session import StreamingSessionStore
-
-                    store = StreamingSessionStore(self.job_queue.redis)
-                    await store.set_completed(
+                    await self.session_service.set_completed(
                         token=self.job_data["session_token"],
                         is_error=is_error,
                         repo=self.repo,
@@ -760,18 +755,15 @@ class JobProcessor:
 
         if new_session_id and self.job_data.get("session_token"):
             try:
-                from shared.streaming_session import StreamingSessionStore
-
-                stream_store = StreamingSessionStore(self.job_queue.redis)
                 if self.streaming_bridge is None:
-                    await stream_store.update_session_id(
+                    await self.session_service.update_session_id(
                         self.job_data["session_token"], new_session_id
                     )
                 transcript_path = find_transcript_path(
                     new_session_id, self.workspace or ""
                 )
                 if transcript_path:
-                    await stream_store.update_transcript_path(
+                    await self.session_service.update_transcript_path(
                         self.job_data["session_token"], transcript_path
                     )
                     write_transcript_meta(
@@ -834,10 +826,8 @@ class JobProcessor:
         if self.job_data.get("session_token"):
             try:
                 from shared.session_stream import SessionStreamBridge
-                from shared.streaming_session import StreamingSessionStore
 
-                err_store = StreamingSessionStore(self.job_queue.redis)
-                await err_store.set_completed(
+                await self.session_service.set_completed(
                     token=self.job_data["session_token"],
                     is_error=True,
                     repo=self.repo,
@@ -883,6 +873,18 @@ class JobProcessor:
         )
 
     async def _cleanup(self):
+        # Release session dedup lock (SETNX-based) so follow-up
+        # requests can create new jobs for this session.
+        if self.persist_session:
+            try:
+                dedup_key = session_dedup_key(
+                    self.repo, self.thread_type, self.thread_id, self.workflow_name
+                )
+                await self.job_queue.redis.delete(dedup_key)
+                logger.debug(f"Released dedup lock for {dedup_key}")
+            except Exception as e:
+                logger.warning(f"Failed to release dedup lock: {e}")
+
         if self.worktree_lock:
             try:
                 await self.worktree_lock.release()

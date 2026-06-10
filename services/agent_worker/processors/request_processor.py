@@ -12,8 +12,8 @@ import httpx
 from langfuse import Langfuse
 
 from shared import GitHubAuthService, JobQueue
+from shared.constants import SESSION_DEDUP_LOCK_TTL, session_dedup_key
 from shared.session_store import SessionStore, resolve_thread_type
-from shared.streaming_session import StreamingSessionStore
 from shared.utils import build_session_url
 from shared.worktree_lock import WorktreeKey, WorktreeLock
 from workflows import WorkflowEngine
@@ -73,7 +73,7 @@ async def _inject_into_running_session(
       4. Start a new SDK turn with the follow-up as prompt
     """
     # 1. Push to inbox → worker drains it in the auto-continue loop
-    store = StreamingSessionStore(redis)
+    store = SessionStore(redis)
     await store.push_inbox_message(token, user_query)
 
     # 2. Send cancel signal → interrupts current SDK turn immediately
@@ -401,7 +401,59 @@ class RequestProcessor:
             if session_proxy_url:
                 try:
                     await self.job_queue.ensure_connected()
-                    streaming_store = StreamingSessionStore(self.job_queue.redis)
+                    redis = self.job_queue.redis
+
+                    # ── Session-aware job dedup (atomic SETNX) ──────────
+                    dedup_key = session_dedup_key(
+                        repo, thread_type, str(issue_number or 0), workflow_name
+                    )
+                    acquired = await redis.set(
+                        dedup_key, "1", nx=True, ex=SESSION_DEDUP_LOCK_TTL
+                    )
+                    if not acquired:
+                        dedup_store = SessionStore(redis)
+                        existing_token = await dedup_store.find_active_session(
+                            repo=repo,
+                            issue_number=issue_number or 0,
+                            workflow=workflow_name,
+                            thread_type=thread_type,
+                        )
+                        if existing_token:
+                            await _inject_into_running_session(
+                                token=existing_token,
+                                user_query=user_query,
+                                redis=redis,
+                                repo=repo,
+                                thread_type=thread_type,
+                                issue_number=issue_number or 0,
+                                workflow=workflow_name,
+                            )
+                            logger.info(
+                                f"[Streaming] Injected follow-up into running session "
+                                f"{existing_token[:8]}... for {repo}#{issue_number}"
+                            )
+                            return "injected"
+
+                        existing_token = await dedup_store.find_session(
+                            repo=repo,
+                            issue_number=issue_number or 0,
+                            workflow=workflow_name,
+                            thread_type=thread_type,
+                        )
+                        if existing_token:
+                            await dedup_store.push_inbox_message(
+                                existing_token, user_query
+                            )
+                            logger.info(
+                                f"[Streaming] Queued follow-up for pending session "
+                                f"{existing_token[:8]}... for {repo}#{issue_number}"
+                            )
+                            return "queued"
+
+                        # Stale lock — no session found, clear and fall through
+                        await redis.delete(dedup_key)
+
+                    streaming_store = SessionStore(redis)
 
                     # Find existing streaming session for stable URLs.
                     # Prefer find_active_session (running only) to avoid

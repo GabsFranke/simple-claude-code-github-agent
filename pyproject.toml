@@ -86,6 +86,8 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+    "deprecated: marks tests covering deprecated interfaces (legacy SessionStore / StreamingSessionStore)",
+    "skip: marks tests for removed/skipped functionality",
 ]
 
 [tool.coverage.run]

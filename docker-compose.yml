@@ -281,31 +281,33 @@ services:
       retries: 3
       start_period: 10s
 
-  session_proxy:
+  session-service:
     build:
       context: .
-      dockerfile: services/session_proxy/Dockerfile
-    command: sh -c 'python -m services.session_proxy.main 2>&1 | tee /var/log/bot/session_proxy.log'
+      dockerfile: services/session_service/Dockerfile
+    command: sh -c 'uvicorn main:app --host 0.0.0.0 --port 8000 2>&1 | tee /var/log/bot/session_service.log'
+    env_file: .env
     restart: unless-stopped
     ports:
-      - "10001:8080"
+      - "10001:8000"
     volumes:
-      - ./logs:/var/log/bot
       - ~/.claude:/home/bot/.claude:ro
+      - ./logs:/var/log/bot
     environment:
+      - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - PYTHONPATH=/app
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - CLAUDE_HOME=/home/bot/.claude
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000,http://localhost:10001}
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:10001/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s
 
   scheduler:
     build:

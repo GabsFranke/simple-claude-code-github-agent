@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 from collections.abc import Generator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -91,11 +92,17 @@ def clean_env(monkeypatch):
 
 @pytest.fixture
 def mock_redis() -> MagicMock:
-    """Mock Redis client."""
+    """Mock Redis client with all methods needed by SessionStore."""
     redis_mock = MagicMock(spec=Redis)
     redis_mock.ping = AsyncMock(return_value=True)
     redis_mock.publish = AsyncMock(return_value=1)
     redis_mock.pubsub = MagicMock()
+    # Hash operations (needed by merged SessionStore)
+    redis_mock.hset = AsyncMock(return_value=1)
+    redis_mock.hgetall = AsyncMock(return_value={})
+    redis_mock.hincrby = AsyncMock(return_value=1)
+    # Lua scripting (needed for atomic subscriber count ops)
+    redis_mock.eval = AsyncMock(return_value=1)
     return redis_mock
 
 
@@ -173,3 +180,137 @@ def sample_issue_comment_payload() -> dict:
         "repository": {"full_name": "owner/repo"},
         "installation": {"id": 12345},
     }
+
+
+@pytest.fixture
+def sample_session_token() -> str:
+    """Sample UUID session token for SessionStore tests."""
+    return "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+
+@pytest.fixture
+def sample_unified_session_data() -> dict[str, Any]:
+    """Complete UnifiedSessionInfo data dict with all 21 fields.
+
+    Fields breakdown (21 total):
+      - 13 from SessionInfo: session_id, repo, thread_type, thread_id,
+        workflow_name, ref, worktree_path, created_at, last_run,
+        turn_count, status, summary, streaming_token
+      - 8 from StreamingSessionData: installation_id, initial_query,
+        conversation_config, transcript_path, run_count,
+        session_proxy_url, issue_number, user
+    """
+    return {
+        "session_id": "ses_abc123def456",
+        "repo": "owner/test-repo",
+        "thread_type": "issue",
+        "thread_id": "42",
+        "workflow_name": "test-workflow",
+        "ref": "main",
+        "worktree_path": "/tmp/worktrees/test-repo",
+        "created_at": "2026-06-09T10:00:00+00:00",
+        "last_run": "2026-06-09T12:30:00+00:00",
+        "turn_count": 3,
+        "status": "active",
+        "summary": "Reviewed auth logic and fixed token refresh",
+        "streaming_token": "strm_tok_abc123def456",
+        "installation_id": "12345678",
+        "initial_query": "/agent review this PR",
+        "conversation_config": '{"persist":true,"ttl_hours":72,"max_turns":50}',
+        "transcript_path": "/tmp/.claude/projects/owner/test-repo/session.jsonl",
+        "run_count": 1,
+        "session_proxy_url": "http://localhost:8000",
+        "issue_number": "42",
+        "user": "testuser",
+    }
+
+
+@pytest.fixture
+def mock_redis_pubsub() -> MagicMock:
+    """Mock Redis pub/sub for channel testing (SessionStreamBridge)."""
+    pubsub = MagicMock()
+    pubsub.subscribe = AsyncMock(return_value=None)
+    pubsub.unsubscribe = AsyncMock(return_value=None)
+    pubsub.get_message = AsyncMock(return_value=None)
+    return pubsub
+
+
+@pytest.fixture
+def mock_session_store_v2(sample_unified_session_data: dict[str, Any]) -> MagicMock:
+    """Mock SessionStore with AsyncMock for all merged store methods.
+
+    Default return values are set for each method — override in individual
+    tests where specific behavior is needed (e.g. error cases, specific data).
+    """
+    store = MagicMock()
+
+    # ---- Session CRUD (from SessionStore) ----
+    store.save_session = AsyncMock()
+    store.get_session = AsyncMock(return_value=sample_unified_session_data)
+    store.close_session = AsyncMock()
+    store.expire_session = AsyncMock()
+    store.list_sessions = AsyncMock(return_value=[sample_unified_session_data])
+    store.update_summary = AsyncMock()
+    store.increment_turn_count = AsyncMock()
+
+    # ---- Streaming lifecycle ----
+    store.create_session = AsyncMock()
+    store.set_completed = AsyncMock()
+    store.set_running = AsyncMock()
+    store.delete_session = AsyncMock()
+    store.set_ttl = AsyncMock()
+
+    # ---- Session lookup ----
+    store.find_session = AsyncMock(return_value=sample_unified_session_data)
+    store.find_active_session = AsyncMock(return_value=sample_unified_session_data)
+
+    # ---- Subscriber management ----
+    store.increment_subscribers = AsyncMock(return_value=1)
+    store.decrement_subscribers = AsyncMock(return_value=0)
+    store.has_subscribers = AsyncMock(return_value=False)
+
+    # ---- Inbox (user messages from browser) ----
+    store.push_inbox_message = AsyncMock()
+    store.pop_inbox_messages = AsyncMock(return_value=[])
+
+    # ---- History / replay buffer ----
+    store.get_history = AsyncMock(return_value=[])
+    store.get_replay_buffer = AsyncMock(return_value=[])
+
+    # ---- Metadata updates ----
+    store.update_session_id = AsyncMock()
+    store.update_transcript_path = AsyncMock()
+    store.increment_run_count = AsyncMock(return_value=2)
+
+    return store
+
+
+@pytest_asyncio.fixture
+async def clean_session_keys(redis_client):
+    """Flush test session keys after integration tests.
+
+    NOT autouse — only include in integration test classes that
+    interact with real Redis session keys.
+
+    Cleans: session:map:*, session:stream:*, session:inbox:*,
+    session:subscribers:*, session:history:* patterns.
+    """
+    yield
+    # Clean up all session-related key patterns
+    patterns = [
+        "session:map:*",
+        "session:stream:*",
+        "session:inbox:*",
+        "session:subscribers:*",
+        "session:history:*",
+    ]
+    for pattern in patterns:
+        cursor = 0
+        while True:
+            cursor, keys = await redis_client.scan(
+                cursor=cursor, match=pattern, count=100
+            )
+            if keys:
+                await redis_client.delete(*keys)
+            if cursor == 0:
+                break

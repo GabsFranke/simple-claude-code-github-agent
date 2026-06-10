@@ -55,6 +55,7 @@ class TestResolveThreadType:
         assert resolve_thread_type({}) == "issue"
 
 
+@pytest.mark.deprecated("Legacy SessionStore — now merged into unified SessionStore")
 class TestSessionStoreSaveSession:
     @pytest.mark.asyncio
     async def test_new_session_sets_fields(self):
@@ -191,6 +192,7 @@ class TestSessionStoreSaveSession:
         assert ttl == 24 * 3600
 
 
+@pytest.mark.deprecated("Legacy SessionStore — now merged into unified SessionStore")
 class TestSessionStoreGetSession:
     @pytest.mark.asyncio
     async def test_returns_session_info(self):
@@ -234,6 +236,7 @@ class TestSessionStoreGetSession:
         assert result is None
 
 
+@pytest.mark.deprecated("Legacy SessionStore — now merged into unified SessionStore")
 class TestSessionStoreCloseSession:
     @pytest.mark.asyncio
     async def test_deletessession_key(self):
@@ -298,6 +301,7 @@ class TestSessionStoreCloseSession:
         assert redis.delete.call_count == 1
 
 
+@pytest.mark.deprecated("Legacy SessionStore — now merged into unified SessionStore")
 class TestSessionStoreExpireSession:
     @pytest.mark.asyncio
     async def test_sets_ttl_when_exists(self):
@@ -343,6 +347,7 @@ class TestSessionStoreExpireSession:
         assert redis.expire.call_count >= 1
 
 
+@pytest.mark.deprecated("Legacy SessionStore — now merged into unified SessionStore")
 class TestSessionStoreUpdateSummary:
     @pytest.mark.asyncio
     async def test_calls_hset(self):
@@ -369,6 +374,7 @@ class TestSessionStoreUpdateSummary:
         )
 
 
+@pytest.mark.deprecated("Legacy SessionStore — now merged into unified SessionStore")
 class TestSessionStoreIncrementTurnCount:
     @pytest.mark.asyncio
     async def test_calls_hincrby(self):
@@ -398,6 +404,7 @@ class TestSessionStoreIncrementTurnCount:
         )
 
 
+@pytest.mark.deprecated("Legacy SessionStore — now merged into unified SessionStore")
 class TestSessionStoreListSessions:
     @pytest.mark.asyncio
     async def test_scans_and_parses(self):

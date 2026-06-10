@@ -32,8 +32,8 @@ ENV/
 .venv
 
 # node
-services/session_proxy/client/node_modules
-services/session_proxy/client/dist
+services/session_service/client/node_modules
+services/session_service/client/dist
 
 # IDE
 .vscode/

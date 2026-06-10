@@ -166,7 +166,14 @@ export function App() {
           } else if (block.type === 'tool_use' && block.name) {
             setLog((l) => [
               ...l,
-              { id: uid(), kind: 'tool', name: block.name!, input: block.input ?? {} },
+              {
+                id: uid(),
+                kind: 'tool',
+                name: block.name!,
+                input: block.input ?? {},
+                result: block.result,
+                isError: block.isError,
+              },
             ])
           }
           // Skip 'thinking' blocks — not useful for display

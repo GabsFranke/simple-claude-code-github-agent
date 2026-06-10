@@ -3,12 +3,20 @@
 Stores session metadata in Redis so the bot can resume conversations when
 users reply in the same thread.  Sessions are scoped by repo + thread type +
 thread ID + workflow, and expire after a configurable TTL.
-"""
 
+The merged store combines the old ``SessionInfo`` and ``StreamingSessionData``
+schemas into ``UnifiedSessionInfo`` — expect higher method count than either
+individual store.
+"""  # pylint: disable=too-many-lines
+
+import json
 import logging
+import re
+import shutil
 import warnings
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal
 
 try:
@@ -22,6 +30,8 @@ from pydantic import BaseModel, Field
 
 from .constants import (
     DEFAULT_SESSION_TTL_HOURS,
+    TRANSCRIPT_ARCHIVE_DIR,
+    _now_iso,
     decode_redis_hash,
 )
 
@@ -34,12 +44,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 from .constants import (  # noqa: E402, F401  (intentional re-exports)
+    DEFAULT_SESSION_TTL_SECONDS,
     history_key,
     inbox_key,
     session_cleanup_key,
     session_key,
     session_pattern,
     streaming_lookup_key,
+    streaming_session_key,
     subscribers_key,
 )
 
@@ -57,6 +69,7 @@ __all__ = [
     "session_key",
     "session_pattern",
     "streaming_lookup_key",
+    "streaming_session_key",
     "subscribers_key",
 ]
 
@@ -101,7 +114,7 @@ class UnifiedSessionInfo(BaseModel):
     """Unified session metadata — merges ALL fields from ``SessionInfo`` (13 fields)
     and ``StreamingSessionData`` (8 unique fields) into a single model.
 
-    This is the canonical session schema for the merged SessionStore V2.
+    This is the canonical session schema for the merged SessionStore.
     Every field includes a ``source`` note in its docstring documenting
     which original store it originated from.
     """
@@ -146,7 +159,7 @@ class UnifiedSessionInfo(BaseModel):
     )
     streaming_token: str | None = Field(
         default=None,
-        description="Streaming session token linking to StreamingSessionStore. "
+        description="Streaming session token linking to the store. "
         "Maps to StreamingSessionData.token. Source: SessionInfo.streaming_token + StreamingSessionData.token",
     )
 
@@ -287,19 +300,50 @@ def _session_pattern(repo: str) -> str:
     return session_pattern(repo)
 
 
-class SessionStore:
-    """Manages session metadata in Redis for conversation continuity.
+# ============================================================================
+# SessionStore — merged store
+# ============================================================================
+
+# Lua scripts for atomic subscriber count operations
+_INCR_SUBSCRIBERS_LUA = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
+_DECR_SUBSCRIBERS_LUA = """
+local count = redis.call('DECR', KEYS[1])
+if count <= 0 then
+    redis.call('DEL', KEYS[1])
+end
+return count
+"""
+
+
+class SessionStore:  # pylint: disable=too-many-public-methods
+    """Unified session store.
+
+    Manages both persistent session mappings (``session:map:*``) and
+    streaming session metadata (``session:stream:*``) in a single class.
 
     Redis schema::
 
-        session:map:{owner:repo}:{thread_type}:{thread_id}:{workflow} = JSON
-
-    Each value is a JSON blob matching ``SessionInfo`` fields.
+        session:map:{safe_repo}:{type}:{id}:{wf}     Hash  — persistent session
+        session:stream:{token}                        Hash  — streaming metadata
+        session:stream:lookup:{repo}:{id}:{wf}        String — token lookup
+        session:inbox:{token}                         List  — user messages
+        session:subscribers:{token}                   Int   — WebSocket count
+        session:history:{token}                       List  — short-lived history
     """
 
     def __init__(self, redis_client: RedisClient):
         self.redis = redis_client
-        self._streaming_store: Any | None = None
+
+    # ------------------------------------------------------------------
+    # Persistence layer (session:map:* keys)
+    # ------------------------------------------------------------------
 
     async def save_session(
         self,
@@ -314,49 +358,71 @@ class SessionStore:
         summary: str | None = None,
         ttl_hours: int = DEFAULT_SESSION_TTL_HOURS,
         streaming_token: str | None = None,
+        installation_id: str = "",
+        initial_query: str = "",
+        conversation_config: str = "",
+        transcript_path: str = "",
+        run_count: int = 1,
+        session_proxy_url: str = "",
+        issue_number: str = "",
+        user: str = "",
     ) -> None:
-        """Create or update a session mapping in Redis."""
+        """Create or update a persistent session mapping.
+
+        Writes the base fields atomically via ``HSET mapping=``, then
+        conditionally sets *created_at* (HSetNX), *turn_count* (HINCRBY
+        when > 0), *summary* and *streaming_token* (only when explicitly
+        provided).
+        """
         key = session_key(repo, thread_type, thread_id, workflow)
         now = datetime.now(UTC).isoformat()
-
-        # Write base fields atomically — a partial write from individual
-        # HSET calls would cause get_session() to return None on crash.
         redis: Any = self.redis
-        await redis.hset(
-            key,
-            mapping={
-                "session_id": str(session_id),
-                "repo": str(repo),
-                "thread_type": str(thread_type),
-                "thread_id": str(thread_id),
-                "workflow_name": str(workflow),
-                "ref": str(ref),
-                "worktree_path": str(worktree_path),
-                "last_run": str(now),
-                "status": "active",
-            },
-        )
-        # Preserve created_at if it exists, otherwise set it
+
+        mapping: dict[str, str] = {
+            "session_id": str(session_id),
+            "repo": str(repo),
+            "thread_type": str(thread_type),
+            "thread_id": str(thread_id),
+            "workflow_name": str(workflow),
+            "ref": str(ref),
+            "worktree_path": str(worktree_path),
+            "last_run": str(now),
+            "status": "active",
+            "turn_count": "0",
+            "installation_id": str(installation_id),
+            "initial_query": str(initial_query),
+            "conversation_config": str(conversation_config),
+            "transcript_path": str(transcript_path),
+            "run_count": str(run_count),
+            "session_proxy_url": str(session_proxy_url),
+            "issue_number": str(issue_number),
+            "user": str(user),
+        }
+        await redis.hset(key, mapping=mapping)
+
+        # Preserve created_at across re-saves
         await redis.hsetnx(key, "created_at", now)
+
         # Accumulate turn_count atomically
-        if turn_count:
+        if turn_count > 0:
             await redis.hincrby(key, "turn_count", turn_count)
-        # Only update summary and streaming_token if explicitly provided
+
+        # Only update optional fields when explicitly provided
         if summary is not None:
             await redis.hset(key, "summary", summary)
         if streaming_token is not None:
             await redis.hset(key, "streaming_token", streaming_token)
+
         await redis.expire(key, ttl_hours * 3600)
         logger.info(
-            f"Saved session {session_id[:8]}... for "
-            f"{repo}/{thread_type}/{thread_id}/{workflow} "
-            f"(ttl={ttl_hours}h)"
+            f"[SessionStore] Saved session {session_id[:8]}... for "
+            f"{repo}/{thread_type}/{thread_id}/{workflow} (ttl={ttl_hours}h)"
         )
 
     async def get_session(
         self, repo: str, thread_type: str, thread_id: str, workflow: str
-    ) -> SessionInfo | None:
-        """Look up an active session, returning None if absent or expired."""
+    ) -> UnifiedSessionInfo | None:
+        """Look up a persistent session, returning ``None`` if absent or corrupt."""
         key = session_key(repo, thread_type, thread_id, workflow)
         redis: Any = self.redis
         data = await redis.hgetall(key)
@@ -364,35 +430,122 @@ class SessionStore:
             return None
         decoded = decode_redis_hash(data)
         try:
-            return SessionInfo.model_validate(decoded)  # type: ignore[no-any-return]
+            return UnifiedSessionInfo.model_validate(decoded)  # type: ignore[no-any-return]
         except Exception as e:
-            logger.warning(f"Corrupt session data at {key}: {e}")
+            logger.warning(f"[SessionStore] Corrupt session data at {key}: {e}")
             return None
 
     async def close_session(
         self, repo: str, thread_type: str, thread_id: str, workflow: str
     ) -> None:
-        """Mark a session as closed (or delete it).
+        """Close a session and clean up all associated Redis keys.
 
-        Also cleans up the associated streaming session and lookup key.
+        Deletes the persistent hash, and if a *streaming_token* is present,
+        also cleans up the streaming session hash, lookup keys (typed + legacy),
+        inbox, subscribers, and history.
         """
         key = session_key(repo, thread_type, thread_id, workflow)
         info = await self.get_session(repo, thread_type, thread_id, workflow)
-        if info:
-            if info.streaming_token:
-                try:
-                    await self._cleanup_streaming(
-                        info.streaming_token, repo, thread_id, workflow, thread_type
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to clean up streaming for {key}: {e}")
+        if info and info.streaming_token:
+            try:
+                await self._cleanup_streaming(
+                    info.streaming_token, repo, thread_id, workflow, thread_type
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[SessionStore] Failed to clean up streaming for {key}: {e}"
+                )
         await self.redis.delete(key)
-        logger.info(f"Closed session for {repo}/{thread_type}/{thread_id}/{workflow}")
+        logger.info(
+            f"[SessionStore] Closed session {repo}/{thread_type}/{thread_id}/{workflow}"
+        )
 
-    async def list_sessions(self, repo: str) -> list[SessionInfo]:
-        """List all active sessions for a repository."""
+    async def archive_transcript(
+        self, session_id: str, repo: str, worktree_path: str
+    ) -> bool:
+        """Copy the session transcript JSONL to durable archive storage.
+
+        Called before worktree deletion to preserve transcripts beyond
+        Redis TTL expiry.  Ephemeral sessions (worktrees under
+        ``.../ephemeral/``) are skipped — their transcripts are transient.
+
+        Returns ``True`` if the transcript was archived successfully,
+        ``False`` if it was skipped or the source file was not found.
+        """
+        if "/ephemeral/" in worktree_path.replace("\\", "/"):
+            logger.debug(
+                f"[SessionStore] Skipping transcript archival for ephemeral "
+                f"session {session_id[:8]}..."
+            )
+            return False
+
+        if not re.match(r"^[a-zA-Z0-9_-]+$", session_id):
+            logger.warning(
+                f"[SessionStore] Invalid session_id for archival: {session_id[:8]}..."
+            )
+            return False
+
+        projects_dir = Path.home() / ".claude" / "projects"
+        if not projects_dir.exists():
+            logger.warning(
+                f"[SessionStore] Projects dir missing, cannot archive "
+                f"transcript for {session_id[:8]}..."
+            )
+            return False
+
+        source_path: Path | None = None
+        sanitized = re.sub(r"[^a-zA-Z0-9]", "-", worktree_path)
+        direct = projects_dir / sanitized / f"{session_id}.jsonl"
+        if direct.exists():
+            source_path = direct
+        else:
+            count = 0
+            for project_dir in projects_dir.iterdir():
+                if count >= 200:
+                    break
+                count += 1
+                if not project_dir.is_dir():
+                    continue
+                candidate = project_dir / f"{session_id}.jsonl"
+                if candidate.exists():
+                    source_path = candidate
+                    break
+
+        if source_path is None:
+            logger.warning(
+                f"[SessionStore] No transcript found for session {session_id[:8]}..."
+            )
+            return False
+
+        archive_dir = Path(TRANSCRIPT_ARCHIVE_DIR) / repo
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        dest = archive_dir / f"{session_id}.jsonl"
+        shutil.copy2(source_path, dest)
+        logger.info(f"[SessionStore] Archived transcript {session_id[:8]}... to {dest}")
+
+        meta_source = source_path.with_suffix(".meta.json")
+        if meta_source.exists():
+            meta_dest = archive_dir / f"{session_id}.meta.json"
+            shutil.copy2(meta_source, meta_dest)
+
+        return True
+
+    async def list_sessions_by_worktree(
+        self, worktree_path: str
+    ) -> list[UnifiedSessionInfo]:
+        """Return sessions whose ``worktree_path`` matches *worktree_path*.
+
+        Uses a Redis SCAN across ALL repositories (``"*"`` wildcard) then
+        filters in-process.  Suitable for orphan-cleanup coordination
+        where the repo is not known in advance.
+        """
+        all_sessions = await self.list_sessions("*")
+        return [s for s in all_sessions if s.worktree_path == worktree_path]
+
+    async def list_sessions(self, repo: str) -> list[UnifiedSessionInfo]:
+        """List all active sessions for a repository via SCAN."""
         pattern = session_pattern(repo)
-        sessions: list[SessionInfo] = []
+        sessions: list[UnifiedSessionInfo] = []
         cursor = 0
         while True:
             cursor, keys = await self.redis.scan(
@@ -404,9 +557,11 @@ class SessionStore:
                 if data:
                     try:
                         decoded = decode_redis_hash(data)
-                        sessions.append(SessionInfo.model_validate(decoded))
+                        sessions.append(UnifiedSessionInfo.model_validate(decoded))
                     except Exception as e:
-                        logger.warning(f"Skipping corrupt session at {key}: {e}")
+                        logger.warning(
+                            f"[SessionStore] Skipping corrupt session at {key}: {e}"
+                        )
             if cursor == 0:
                 break
         return sessions
@@ -419,32 +574,34 @@ class SessionStore:
         workflow: str,
         ttl_hours: int = 72,
     ) -> None:
-        """Set a new TTL for an existing session (e.g., when an issue is closed).
-
-        Also propagates TTL to the associated streaming session.
-        """
+        """Set a new TTL on a session and propagate to streaming sub-keys."""
         key = session_key(repo, thread_type, thread_id, workflow)
-        result = await self.redis.expire(key, ttl_hours * 3600)
+        ttl_seconds = ttl_hours * 3600
+        result = await self.redis.expire(key, ttl_seconds)
         if not result:
-            logger.debug(f"Session key {key} does not exist, skipping TTL propagation")
+            logger.debug(
+                f"[SessionStore] Session key {key} does not exist, skipping TTL"
+            )
             return
-        # Propagate TTL to streaming session
+        # Propagate TTL to streaming sub-keys
         info = await self.get_session(repo, thread_type, thread_id, workflow)
-        if info:
+        if info and info.streaming_token:
             try:
-                if info.streaming_token:
-                    await self._propagate_streaming_ttl(
-                        info.streaming_token,
-                        repo,
-                        thread_id,
-                        workflow,
-                        ttl_hours,
-                        thread_type,
-                    )
+                await self._propagate_streaming_ttl(
+                    info.streaming_token,
+                    repo,
+                    thread_id,
+                    workflow,
+                    ttl_hours,
+                    thread_type,
+                )
             except Exception as e:
-                logger.warning(f"Failed to propagate streaming TTL for {key}: {e}")
+                logger.warning(
+                    f"[SessionStore] Failed to propagate streaming TTL for {key}: {e}"
+                )
         logger.info(
-            f"Set TTL to {ttl_hours}h for session {repo}/{thread_type}/{thread_id}/{workflow}"
+            f"[SessionStore] Set TTL {ttl_hours}h on session "
+            f"{repo}/{thread_type}/{thread_id}/{workflow}"
         )
 
     async def update_summary(
@@ -455,13 +612,13 @@ class SessionStore:
         workflow: str,
         summary: str,
     ) -> None:
-        """Update the conversation summary for a session."""
+        """Update the conversation summary field."""
         key = session_key(repo, thread_type, thread_id, workflow)
         redis: Any = self.redis
         try:
             await redis.hset(key, "summary", summary)
         except Exception as e:
-            logger.warning(f"Failed to update summary for {key}: {e}")
+            logger.warning(f"[SessionStore] Failed to update summary for {key}: {e}")
 
     async def increment_turn_count(
         self,
@@ -471,7 +628,7 @@ class SessionStore:
         workflow: str,
         additional_turns: int,
     ) -> None:
-        """Add to the cumulative turn count after a continuation."""
+        """Increment turn_count and refresh last_run."""
         key = session_key(repo, thread_type, thread_id, workflow)
         last_run = datetime.now(UTC).isoformat()
         redis: Any = self.redis
@@ -479,7 +636,349 @@ class SessionStore:
             await redis.hincrby(key, "turn_count", additional_turns)
             await redis.hset(key, "last_run", last_run)
         except Exception as e:
-            logger.warning(f"Failed to increment turn count for {key}: {e}")
+            logger.warning(
+                f"[SessionStore] Failed to increment turn count for {key}: {e}"
+            )
+
+    # ------------------------------------------------------------------
+    # Streaming layer (session:stream:* keys)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_streaming_data(data: dict[str, str]) -> dict[str, str]:
+        """Normalize legacy streaming session fields to UnifiedSessionInfo schema.
+
+        The old ``StreamingSessionData`` used ``issue_number`` / ``workflow``
+        and was missing ``worktree_path`` / ``created_at`` / ``last_run``.
+        This shim maps those fields so ``model_validate`` succeeds against
+        sessions written before the merge.
+        """
+        data = data.copy()  # don't mutate caller's dict
+        # Map old field names to new
+        if "issue_number" in data and "thread_id" not in data:
+            data["thread_id"] = data["issue_number"]
+        if "workflow" in data and "workflow_name" not in data:
+            data["workflow_name"] = data["workflow"]
+        # Supply defaults for fields missing from old schema
+        data.setdefault("worktree_path", "")
+        data.setdefault("created_at", _now_iso())
+        data.setdefault("last_run", _now_iso())
+        return data
+
+    async def create_session(
+        self,
+        token: str,
+        repo: str,
+        issue_number: int,
+        workflow: str,
+        session_proxy_url: str = "",
+        ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS,
+        installation_id: str = "",
+        initial_query: str = "",
+        thread_type: Literal["pr", "issue", "discussion"] = "issue",
+        ref: str = "main",
+        user: str = "",
+        conversation_config: str = "",
+        session_id: str = "",
+    ) -> None:
+        """Create a streaming session record with lookup key in one pipeline."""
+        key = streaming_session_key(token)
+        data: dict[str, str] = {
+            "token": token,
+            "repo": repo,
+            "issue_number": str(issue_number),
+            "thread_id": str(issue_number),
+            "workflow": workflow,
+            "workflow_name": workflow,
+            "session_proxy_url": session_proxy_url,
+            "status": "running",
+            "installation_id": installation_id,
+            "initial_query": initial_query,
+            "thread_type": thread_type,
+            "ref": ref,
+            "user": user,
+            "conversation_config": conversation_config,
+            "session_id": session_id,
+            "transcript_path": "",
+            "run_count": "1",
+            "worktree_path": "",
+            "created_at": _now_iso(),
+            "last_run": _now_iso(),
+        }
+        pipeline = self.redis.pipeline()
+        pipeline.hset(key, mapping=data)  # type: ignore[arg-type]
+        pipeline.expire(key, ttl_seconds)
+        lk = streaming_lookup_key(
+            repo, str(issue_number), workflow, thread_type=thread_type
+        )
+        pipeline.setex(lk, ttl_seconds, token)
+        await pipeline.execute()
+        logger.info(
+            f"[SessionStore] Created streaming session {token[:8]}... "
+            f"for {repo}#{issue_number} (ttl={ttl_seconds}s)"
+        )
+
+    async def get_streaming_session(self, token: str) -> UnifiedSessionInfo | None:
+        """Get streaming session metadata by token.
+
+        Returns ``UnifiedSessionInfo`` or ``None`` if the token doesn't exist
+        or the data is corrupt.
+        """
+        key = streaming_session_key(token)
+        data = await self.redis.hgetall(key)
+        if not data:
+            return None
+        decoded = decode_redis_hash(data)
+        decoded = self._normalize_streaming_data(decoded)
+        try:
+            return UnifiedSessionInfo.model_validate(decoded)  # type: ignore[no-any-return]
+        except Exception as e:
+            logger.warning(
+                f"[SessionStore] Corrupt streaming data for {token[:8]}...: {e}"
+            )
+            return None
+
+    async def find_session(
+        self,
+        repo: str,
+        issue_number: int,
+        workflow: str,
+        thread_type: str = "",
+    ) -> str | None:
+        """Find a streaming token by repo/issue/workflow.
+
+        Returns the token regardless of status, or ``None`` if not found.
+        Stale lookup entries (hash expired) are cleaned up automatically.
+        Falls back to legacy lookup (without thread_type) when the typed
+        lookup returns nothing.
+        """
+        lk = streaming_lookup_key(
+            repo, str(issue_number), workflow, thread_type=thread_type
+        )
+        raw = await self.redis.get(lk)
+        if not raw:
+            if thread_type:
+                lk_legacy = streaming_lookup_key(
+                    repo, str(issue_number), workflow, thread_type=""
+                )
+                raw = await self.redis.get(lk_legacy)
+                if not raw:
+                    return None
+            else:
+                return None
+        if isinstance(raw, bytes):
+            token_val: str = raw.decode()
+        else:
+            token_val = raw  # type: ignore[assignment]
+        stream_key = streaming_session_key(token_val)
+        exists = await self.redis.hgetall(stream_key)
+        if exists:
+            return token_val
+        await self.redis.delete(lk)
+        return None
+
+    async def find_active_session(
+        self,
+        repo: str,
+        issue_number: int,
+        workflow: str,
+        thread_type: str = "",
+    ) -> str | None:
+        """Find an active (running) streaming token.
+
+        Returns the token if found and status is ``"running"``, otherwise ``None``.
+        """
+        token = await self.find_session(
+            repo, issue_number, workflow, thread_type=thread_type
+        )
+        if not token:
+            return None
+        stream_key = streaming_session_key(token)
+        data = await self.redis.hgetall(stream_key)
+        if not data:
+            return None
+        decoded = decode_redis_hash(data)
+        if decoded.get("status") == "running":
+            return token
+        return None
+
+    async def set_completed(
+        self,
+        token: str,
+        is_error: bool = False,
+        repo: str | None = None,
+        issue_number: int | None = None,
+        workflow: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Mark a streaming session as completed or errored.
+
+        When *session_id* is provided it is atomically updated with the
+        status change to prevent a race between set_completed and
+        update_session_id.
+        """
+        key = streaming_session_key(token)
+        status = "error" if is_error else "completed"
+        if session_id:
+            await self.redis.hset(
+                key, mapping={"status": status, "session_id": session_id}
+            )
+        else:
+            await self.redis.hset(key, "status", status)
+        logger.info(f"[SessionStore] Streaming session {token[:8]}... -> {status}")
+
+    async def set_running(
+        self, token: str, ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
+    ) -> None:
+        """Reset streaming session to running (for auto-continue / resume).
+
+        Clears the stale *session_id* from the previous run so a fresh
+        SDK session can be started.  Preserves *transcript_path* so the
+        SPA can still load conversation history while the new run begins.
+        """
+        key = streaming_session_key(token)
+        await self.redis.hset(
+            key,
+            mapping={
+                "status": "running",
+                "session_id": "",
+            },
+        )
+        await self.redis.expire(key, ttl_seconds)
+        logger.info(f"[SessionStore] Streaming session {token[:8]}... -> running")
+
+    async def delete_session(self, token: str) -> None:
+        """Delete a streaming session and its sub-keys (inbox, subscribers)."""
+        key = streaming_session_key(token)
+        await self.redis.delete(key)
+        ibx = inbox_key(token)
+        await self.redis.delete(ibx)
+        sub = subscribers_key(token)
+        await self.redis.delete(sub)
+        logger.info(f"[SessionStore] Deleted streaming session {token[:8]}...")
+
+    async def set_ttl(self, token: str, ttl_seconds: int) -> None:
+        """Set TTL on streaming session + inbox + subscribers keys."""
+        key = streaming_session_key(token)
+        await self.redis.expire(key, ttl_seconds)
+        ibx = inbox_key(token)
+        await self.redis.expire(ibx, ttl_seconds)
+        sub = subscribers_key(token)
+        await self.redis.expire(sub, ttl_seconds)
+        logger.debug(
+            f"[SessionStore] Set TTL {ttl_seconds}s on streaming {token[:8]}..."
+        )
+
+    # ------------------------------------------------------------------
+    # Subscriber count (atomic Lua scripts)
+    # ------------------------------------------------------------------
+
+    async def increment_subscribers(self, token: str) -> int:
+        """Atomically increment subscriber count. Returns new count."""
+        key = subscribers_key(token)
+        count = await self.redis.eval(
+            _INCR_SUBSCRIBERS_LUA, 1, key, str(DEFAULT_SESSION_TTL_SECONDS)
+        )
+        return int(count)
+
+    async def decrement_subscribers(self, token: str) -> int:
+        """Atomically decrement subscriber count (floor 0). Returns new count."""
+        key = subscribers_key(token)
+        count = await self.redis.eval(_DECR_SUBSCRIBERS_LUA, 1, key)
+        return int(count)
+
+    async def has_subscribers(self, token: str) -> bool:
+        """Return ``True`` if at least one browser is connected."""
+        key = subscribers_key(token)
+        raw = await self.redis.get(key)
+        if raw is None:
+            return False
+        count = int(raw.decode() if isinstance(raw, bytes) else raw)
+        return count > 0
+
+    # ------------------------------------------------------------------
+    # History
+    # ------------------------------------------------------------------
+
+    async def get_history(self, token: str) -> list[dict]:
+        """Fetch the full persistent message history (LRANGE + JSON parse)."""
+        key = history_key(token)
+        raw_messages = await self.redis.lrange(key, 0, -1)
+        result: list[dict] = []
+        for raw in raw_messages:
+            try:
+                text = raw.decode() if isinstance(raw, bytes) else raw
+                result.append(json.loads(text))
+            except Exception:
+                pass
+        return result
+
+    # ------------------------------------------------------------------
+    # Inbox
+    # ------------------------------------------------------------------
+
+    async def push_inbox_message(self, token: str, content: str) -> None:
+        """Push a user message into the session inbox."""
+        ibx = inbox_key(token)
+        message_data = json.dumps({"type": "user_message", "content": content})
+        await self.redis.rpush(ibx, message_data)
+        await self.redis.expire(ibx, DEFAULT_SESSION_TTL_SECONDS)
+
+    async def pop_inbox_messages(self, token: str) -> list[str]:
+        """Atomically drain all messages from the inbox.
+
+        Returns list of message content strings, oldest first.
+        Raises on Redis eval failures to prevent silent message loss.
+        """
+        ibx = inbox_key(token)
+
+        lua_drain = """
+        local items = redis.call('LRANGE', KEYS[1], 0, -1)
+        redis.call('DEL', KEYS[1])
+        return items
+        """
+        try:
+            raw_items = await self.redis.eval(lua_drain, 1, ibx)
+        except Exception as e:
+            logger.error(f"[SessionStore] Failed to drain inbox for {token}: {e}")
+            raise
+
+        messages: list[str] = []
+        for raw in raw_items or []:
+            try:
+                text = raw.decode() if isinstance(raw, bytes) else raw
+                data = json.loads(text)
+                if data.get("type") == "user_message" and data.get("content"):
+                    messages.append(data["content"])
+            except Exception:
+                pass
+        return messages
+
+    # ------------------------------------------------------------------
+    # Field updates
+    # ------------------------------------------------------------------
+
+    async def update_session_id(self, token: str, session_id: str) -> None:
+        """Update the SDK session_id in the streaming session metadata."""
+        key = streaming_session_key(token)
+        await self.redis.hset(key, "session_id", session_id)
+        logger.debug(f"[SessionStore] Updated session_id for {token[:8]}...")
+
+    async def update_transcript_path(self, token: str, path: str) -> None:
+        """Update the transcript_path in the streaming session metadata."""
+        key = streaming_session_key(token)
+        await self.redis.hset(key, "transcript_path", path)
+        logger.debug(f"[SessionStore] Updated transcript_path for {token[:8]}...")
+
+    async def increment_run_count(self, token: str) -> int:
+        """Increment the run count. Returns new count."""
+        key = streaming_session_key(token)
+        count = await self.redis.hincrby(key, "run_count", 1)
+        return int(count)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     async def _cleanup_streaming(
         self,
@@ -489,10 +988,15 @@ class SessionStore:
         workflow: str,
         thread_type: str = "",
     ) -> None:
-        """Delete streaming session data and lookup key."""
+        """Delete streaming session data and all sub-keys."""
         # Delete the streaming session hash
-        session_key = f"session:stream:{token}"
-        await self.redis.delete(session_key)
+        stream_key = streaming_session_key(token)
+        await self.redis.delete(stream_key)
+        # Delete inbox and subscribers
+        await self.redis.delete(inbox_key(token))
+        await self.redis.delete(subscribers_key(token))
+        # Delete history
+        await self.redis.delete(history_key(token))
         # Delete the lookup key
         lookup_key = streaming_lookup_key(
             repo, thread_id, workflow, thread_type=thread_type
@@ -502,9 +1006,7 @@ class SessionStore:
         if thread_type:
             legacy_key = streaming_lookup_key(repo, thread_id, workflow, thread_type="")
             await self.redis.delete(legacy_key)
-        logger.info(
-            f"Cleaned up streaming session {token[:8]}... for {repo}/{thread_type}/{thread_id}/{workflow}"
-        )
+        logger.info(f"[SessionStore] Cleaned up streaming session {token[:8]}...")
 
     async def _propagate_streaming_ttl(
         self,
@@ -516,13 +1018,9 @@ class SessionStore:
         thread_type: str = "",
     ) -> None:
         """Propagate session TTL to streaming session and all sub-keys."""
-        if self._streaming_store is None:
-            from shared.streaming_session import StreamingSessionStore
-
-            self._streaming_store = StreamingSessionStore(self.redis)
-
         ttl_seconds = ttl_hours * 3600
-        await self._streaming_store.set_ttl(token, ttl_seconds)
+        # Propagate to streaming session hash + inbox + subscribers
+        await self.set_ttl(token, ttl_seconds)
         # Also propagate to the lookup key
         lookup_key = streaming_lookup_key(
             repo, thread_id, workflow, thread_type=thread_type
@@ -532,4 +1030,6 @@ class SessionStore:
         if thread_type:
             legacy_key = streaming_lookup_key(repo, thread_id, workflow, thread_type="")
             await self.redis.expire(legacy_key, ttl_seconds)
-        logger.debug(f"Propagated TTL {ttl_hours}h to streaming session {token[:8]}...")
+        logger.debug(
+            f"[SessionStore] Propagated TTL {ttl_hours}h to streaming {token[:8]}..."
+        )

@@ -60,6 +60,7 @@ async def _process_cleanup_requests(redis: Any) -> None:
     branch delete) to the ``agent:worktree:cleanup`` Redis list.
     This function drains all pending requests each cycle.
     """
+    # pylint: disable=too-many-nested-blocks
     if redis is None:
         return
 
@@ -79,6 +80,30 @@ async def _process_cleanup_requests(redis: Any) -> None:
                 logger.info(
                     f"Cleaning up worktrees for {repo}/{thread_type}/{thread_id}"
                 )
+
+                # Check session state before deletion (coordinate archival)
+                try:
+                    session_store = SessionStore(redis)
+                    sessions = await session_store.list_sessions(repo)
+                    matching = [
+                        s
+                        for s in sessions
+                        if s.thread_type == thread_type and s.thread_id == thread_id
+                    ]
+                    for s in matching:
+                        logger.info(
+                            f"Session state for {repo}/{thread_type}/{thread_id}/"
+                            f"{s.workflow_name}: status={s.status}, "
+                            f"last_run={s.last_run}"
+                        )
+                        await session_store.archive_transcript(
+                            session_id=s.session_id,
+                            repo=s.repo,
+                            worktree_path=s.worktree_path,
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to check session state before cleanup: {e}")
+
                 bare_repo = os.path.join("/var/cache/repos", f"{repo}.git")
                 await cleanup_worktrees(
                     repo, thread_type, thread_id, bare_repo=bare_repo
@@ -155,8 +180,9 @@ async def _process_cleanup_requests(redis: Any) -> None:
 async def _orphan_cleanup_loop(redis: Any) -> None:
     """Periodically scan for and remove orphan worktrees.
 
-    A worktree becomes an orphan when its Redis session TTL expires.
+    ...
     """
+    # pylint: disable=too-many-nested-blocks
     if redis is None:
         return
 
@@ -171,9 +197,35 @@ async def _orphan_cleanup_loop(redis: Any) -> None:
 
         if acquired:
             try:
+                # Check overall session state distribution before cleanup
+                all_sessions = await session_store.list_sessions("*")
+                status_counts: dict[str, int] = {}
+                for s in all_sessions:
+                    status_counts[s.status] = status_counts.get(s.status, 0) + 1
+                if status_counts:
+                    logger.info(
+                        f"Session state distribution before orphan cleanup: {status_counts}"
+                    )
+
                 orphans = await detect_orphan_worktrees(session_store)
                 for orphan in orphans:
                     logger.info(f"TTL expired, cleaning up orphan worktree: {orphan}")
+
+                    try:
+                        orphan_sessions = await session_store.list_sessions_by_worktree(
+                            str(orphan)
+                        )
+                        for s in orphan_sessions:
+                            await session_store.archive_transcript(
+                                session_id=s.session_id,
+                                repo=s.repo,
+                                worktree_path=s.worktree_path,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to archive transcripts for orphan {orphan}: {e}"
+                        )
+
                     shutil.rmtree(orphan, ignore_errors=True)
 
                     project_dir = get_project_dir_for_worktree(orphan)

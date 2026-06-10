@@ -40,7 +40,7 @@ down: ## Stop services. Use LANGFUSE=true to also stop Langfuse services.
 restart: down up ## Restart all services
 
 logs: ## Tail logs for bot services only
-	$(COMPOSE) logs -f webhook worker sandbox_worker memory_worker retrospector_worker repo_sync scheduler
+	$(COMPOSE) logs -f webhook worker sandbox_worker memory_worker retrospector_worker repo_sync scheduler session-service
 
 logs-all: ## Tail logs for all services
 	$(COMPOSE) logs -f
@@ -50,6 +50,9 @@ logs-webhook: ## Tail webhook logs
 
 logs-sdk: ## Tail sandbox worker logs
 	$(COMPOSE) logs -f sandbox_worker
+
+logs-session-service: ## Tail session service logs
+	$(COMPOSE) logs -f session-service
 
 ps: ## List running services
 	$(COMPOSE) ps

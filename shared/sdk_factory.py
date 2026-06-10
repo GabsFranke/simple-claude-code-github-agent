@@ -16,6 +16,7 @@ from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 
 from shared.langfuse_hooks import setup_langfuse_hooks
 from shared.post_processing import flush_pending_post_jobs as _flush_pending_post_jobs
+from shared.transcript_writer import IncrementalTranscriptHook
 
 logger = logging.getLogger(__name__)
 
@@ -504,6 +505,39 @@ class SDKOptionsBuilder:
                     self._hooks[event] = [
                         HookMatcher(matcher="*", hooks=[capture_and_buffer])
                     ]
+
+        return self
+
+    def with_incremental_transcript(self) -> "SDKOptionsBuilder":
+        """Add incremental transcript writing hooks for durable message persistence.
+
+        Registers PostToolUse, UserPromptSubmit, Stop, and SubagentStop hooks
+        that write each SDK message to a JSONL file immediately using
+        O_APPEND | O_DSYNC crash-safe writes. This is the core durability
+        fix for Bug #1 (in-flight message loss on restart).
+
+        The transcript path is predicted from session metadata at runtime
+        using the SDK convention: ``~/.claude/projects/<sanitized-cwd>/<session_id>.jsonl``.
+        On ``Stop``/``SubagentStop``, the path is confirmed from the hook
+        input data.
+
+        Complements ``with_transcript_staging()`` — the staging hook captures
+        the transcript path for post-processing, while this hook writes
+        the durable transcript incrementally. No double-write occurs because
+        the staging hook only reads the path; it does not write to the
+        transcript file.
+
+        Returns:
+            Self for method chaining
+        """
+        hook = IncrementalTranscriptHook()
+        hooks = hook.build_hooks_dict()
+
+        for event_name, matchers in hooks.items():
+            if event_name in self._hooks:
+                self._hooks[event_name].extend(matchers)
+            else:
+                self._hooks[event_name] = list(matchers)
 
         return self
 

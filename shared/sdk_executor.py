@@ -7,7 +7,6 @@ instrumentation, and observability.
 import asyncio
 import logging
 import os
-from typing import TYPE_CHECKING
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -19,9 +18,7 @@ from claude_agent_sdk import (
 
 from shared import SDKError, SDKTimeoutError
 from shared.dlq import is_transient_error
-
-if TYPE_CHECKING:
-    from shared.session_stream import SessionStreamBridge
+from shared.session_stream import SessionStreamBridge
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +37,7 @@ async def execute_sdk(
     collect_text: bool = True,
     max_retries: int = 1,
     retry_base_delay: float = 5.0,
-    streaming_bridge: "SessionStreamBridge | None" = None,
+    streaming_bridge: SessionStreamBridge | None = None,
 ) -> dict:
     """Execute Claude Agent SDK with given options.
 
@@ -128,7 +125,7 @@ async def _execute_sdk_once(
     options,
     timeout: int | None = None,
     collect_text: bool = True,
-    streaming_bridge: "SessionStreamBridge | None" = None,
+    streaming_bridge: SessionStreamBridge | None = None,
 ) -> dict:
     """Execute Claude Agent SDK once (internal implementation).
 

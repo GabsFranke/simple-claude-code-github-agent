@@ -64,6 +64,10 @@ PENDING_JOB_QUEUE = "agent:jobs:pending"
 WORKTREE_CLEANUP_QUEUE = "agent:worktree:cleanup"
 ORPHAN_LOCK_KEY = "lock:orphan_cleanup"
 
+# Transcript archival — durable storage for transcripts before
+# worktree deletion so that transcripts survive TTL expiry.
+TRANSCRIPT_ARCHIVE_DIR = "/var/transcripts"
+
 # Streaming session Redis key prefixes
 SESSION_KEY = "session:stream:{}"
 SESSION_LOOKUP_KEY = "session:stream:lookup:{}"
@@ -74,6 +78,10 @@ SESSION_HISTORY_KEY = "session:history:{}"
 # Streaming channels
 MSG_CHANNEL = "session:msg:{}"
 CTL_CHANNEL = "session:ctl:{}"
+
+# Session-aware job deduplication lock
+SESSION_DEDUP_KEY = "agent:session:lock:{}"
+SESSION_DEDUP_LOCK_TTL = 30  # seconds — safety net, cleared by worker on completion
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +108,7 @@ def streaming_lookup_key(
 ) -> str:
     """Build the Redis lookup key for a streaming session token.
 
-    Centralises the key format used by both SessionStore and
-    StreamingSessionStore so the two modules cannot drift apart.
+    Centralises the key format so all store modules cannot drift apart.
 
     When *thread_type* is provided the key includes it for precise
     matching; otherwise a legacy (pre-thread_type) key is returned
@@ -119,8 +126,8 @@ def streaming_session_key(token: str) -> str:
 
     Redis type: Hash
     TTL: ``DEFAULT_SESSION_TTL_SECONDS`` (set on creation)
-    Written by: ``StreamingSessionStore.create_session()``
-    Read by: ``StreamingSessionStore.get_session()``, ``set_completed()``,
+    Written by: ``SessionStore.create_session()``
+    Read by: ``SessionStore.get_streaming_session()``, ``set_completed()``,
              ``set_running()``, ``update_session_id()``, etc.
 
     Returns a key like ``session:stream:{token}``.
@@ -134,8 +141,8 @@ def inbox_key(token: str) -> str:
     Redis type: List
     TTL: ``DEFAULT_SESSION_TTL_SECONDS``
     Written by: ``ControlChannel._dispatch()``,
-                ``StreamingSessionStore.push_inbox_message()``
-    Read by: ``StreamingSessionStore.pop_inbox_messages()``
+                ``SessionStore.push_inbox_message()``
+    Read by: ``SessionStore.pop_inbox_messages()``
 
     Returns a key like ``session:inbox:{token}``.
     """
@@ -147,9 +154,9 @@ def subscribers_key(token: str) -> str:
 
     Redis type: Integer (String internally)
     TTL: ``DEFAULT_SESSION_TTL_SECONDS`` (set on first INCR via Lua script)
-    Written by: ``StreamingSessionStore.increment_subscribers()``,
-                ``StreamingSessionStore.decrement_subscribers()``
-    Read by: ``StreamingSessionStore.has_subscribers()``
+    Written by: ``SessionStore.increment_subscribers()``,
+                ``SessionStore.decrement_subscribers()``
+    Read by: ``SessionStore.has_subscribers()``
 
     Returns a key like ``session:subscribers:{token}``.
     """
@@ -162,7 +169,7 @@ def history_key(token: str) -> str:
     Redis type: List
     TTL: ``HISTORY_TTL_SECONDS``
     Written by: ``SessionStreamBridge.publish()``
-    Read by: ``StreamingSessionStore.get_history()``
+    Read by: ``SessionStore.get_history()``
 
     Returns a key like ``session:history:{token}``.
     """
@@ -210,6 +217,27 @@ def session_cleanup_key(repo: str, thread_type: str, thread_id: str) -> str:
     """
     safe_repo = sanitize_repo_key(repo)
     return f"session:cleanup:{safe_repo}:{thread_type}:{thread_id}"
+
+
+def session_dedup_key(
+    repo: str, thread_type: str, thread_id: str, workflow: str
+) -> str:
+    """Build the Redis key for session-aware job deduplication.
+
+    Prevents duplicate jobs when multiple requests arrive for the same
+    session within a short window.  Uses SETNX for atomicity so exactly
+    one request wins the race and creates a job; the others inject
+    their message into the running session instead.
+
+    Redis type: String (with short TTL — safety net)
+    TTL: ``SESSION_DEDUP_LOCK_TTL`` (30 s, cleared proactively by worker)
+    Written by: ``RequestProcessor._execute()`` (SETNX before job creation)
+    Cleared by: ``JobProcessor._cleanup()`` (finally block)
+
+    Returns a key like ``agent:session:lock:{safe_repo}:{thread_type}:{thread_id}:{workflow}``.
+    """
+    safe_repo = sanitize_repo_key(repo)
+    return SESSION_DEDUP_KEY.format(f"{safe_repo}:{thread_type}:{thread_id}:{workflow}")
 
 
 def decode_redis_hash(data: dict[bytes | str, bytes | str]) -> dict[str, str]:
