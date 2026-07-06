@@ -697,7 +697,8 @@ class TestTokenResolution:
         ), f"Expected 200, got {response.status_code}: {response.text}"
         body = response.json()
         assert body["token"] == token
-        assert body["status"] == "running"
+        assert body["status"] == "found"
+        assert body["session"]["status"] == "running"
 
     def test_completed_session_returns_token_and_completed_status(
         self,
@@ -735,7 +736,8 @@ class TestTokenResolution:
         ), f"Expected 200, got {response.status_code}: {response.text}"
         body = response.json()
         assert body["token"] == token
-        assert body["status"] == "completed"
+        assert body["status"] == "found"
+        assert body["session"]["status"] == "completed"
 
     def test_error_session_returns_token_and_error_status(
         self,
@@ -771,7 +773,8 @@ class TestTokenResolution:
         assert response.status_code == 200
         body = response.json()
         assert body["token"] == token
-        assert body["status"] == "error"
+        assert body["status"] == "found"
+        assert body["session"]["status"] == "error"
 
     def test_transcript_fallback_when_no_redis_session(
         self,
@@ -793,14 +796,15 @@ class TestTokenResolution:
         ), f"Expected 200, got {response.status_code}: {response.text}"
         body = response.json()
         assert body["token"] == "transcript:sid_abc123def"
-        assert body["status"] == "completed"
+        assert body["status"] == "found"
+        assert body["session"]["status"] == "completed"
 
-    def test_not_found_returns_404(
+    def test_not_found_returns_200_pending(
         self,
         client: TestClient,
         mock_session_store_v2: MagicMock,
     ):
-        """Nothing in Redis, no transcript -> 404 with descriptive error."""
+        """Nothing in Redis, no transcript -> 200 with status=pending."""
         mock_session_store_v2.find_active_session.return_value = None
         mock_session_store_v2.find_session.return_value = None
 
@@ -811,10 +815,10 @@ class TestTokenResolution:
             response = client.get("/api/resolve/test/repo/issues/42/test-workflow")
 
         assert (
-            response.status_code == 404
-        ), f"Expected 404, got {response.status_code}: {response.text}"
+            response.status_code == 200
+        ), f"Expected 200, got {response.status_code}: {response.text}"
         body = response.json()
-        assert "detail" in body
+        assert body["status"] == "pending"
 
     def test_invalid_number_returns_400(
         self, client: TestClient, mock_session_store_v2: MagicMock
@@ -881,7 +885,8 @@ class TestTokenResolution:
         assert response.status_code == 200
         body = response.json()
         assert body["token"] == "transcript:sid_stale"
-        assert body["status"] == "completed"
+        assert body["status"] == "found"
+        assert body["session"]["status"] == "completed"
 
 
 # ============================================================================

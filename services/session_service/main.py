@@ -24,16 +24,12 @@ from pathlib import Path
 from typing import Literal
 
 import redis.asyncio as aioredis
-from config import SessionServiceConfig
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from resume import handle_resume
 from starlette.websockets import WebSocketState
-from store import get_store, init_store
-from transcript import load_transcript_history
 
 from shared.constants import (
     CTL_CHANNEL,
@@ -47,6 +43,11 @@ from shared.constants import (
 from shared.logging_utils import setup_logging
 from shared.session_store import UnifiedSessionInfo
 from shared.utils import url_segment_to_thread_type
+
+from .config import SessionServiceConfig
+from .resume import handle_resume
+from .store import get_store, init_store
+from .transcript import load_transcript_history
 
 logger = logging.getLogger(__name__)
 
@@ -711,6 +712,7 @@ async def _ws_to_redis(websocket: WebSocket, token: str) -> None:
             logger.warning("[WS] Failed to forward control message: %s", e)
 
 
+# pylint: disable=too-many-nested-blocks
 def _transcript_to_spa_messages(entries: list[dict]) -> list[dict]:
     """Convert raw transcript JSONL entries to SPA-compatible messages.
 

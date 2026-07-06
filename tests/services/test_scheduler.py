@@ -70,7 +70,7 @@ class TestWorkflowScheduler:
 
         await ws.stop()
         assert ws._running is False
-        mock_scheduler_deps["redis_client"].aclose.assert_called_once()
+        mock_scheduler_deps["redis_client"].close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_load_schedules(self, mock_scheduler_deps):

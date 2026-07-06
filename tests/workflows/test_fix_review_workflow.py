@@ -8,6 +8,7 @@ import yaml
 from workflows.engine import WorkflowEngine
 
 
+@pytest.mark.skip(reason="fix-review workflow was removed from workflows.yaml")
 class TestFixReviewWorkflow:
     """Test fix-review workflow configuration and routing."""
 
@@ -97,6 +98,7 @@ class TestFixReviewWorkflow:
         assert "fix" in description.lower() or "review" in description.lower()
 
 
+@pytest.mark.skip(reason="fix-review workflow was removed from workflows.yaml")
 class TestFixReviewWorkflowValidation:
     """Test fix-review workflow configuration validation in workflows.yaml."""
 
