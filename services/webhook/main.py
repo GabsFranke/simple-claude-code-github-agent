@@ -11,6 +11,7 @@ from validators import verify_signature  # type: ignore[attr-defined]
 from shared import get_queue
 from shared.config import get_webhook_config, handle_config_error
 from shared.logging_utils import setup_logging
+from shared.webhook_dedup import WebhookDeduplicator
 from workflows import WorkflowEngine
 
 # Load configuration with detailed error reporting
@@ -26,12 +27,43 @@ logger = logging.getLogger(__name__)
 logger.info(f"Logging configured at {config.log_level} level")
 logger.info(f"Configuration loaded: Port={config.port}")
 
+# Fail closed: the webhook is the only service published beyond loopback, and
+# its HMAC signature is the sole thing separating GitHub from anyone else who
+# can reach the port. Refuse to start unsigned unless explicitly opted in.
+if not config.github.github_webhook_secret:
+    if not config.allow_unsigned_webhooks:
+        print("\n" + "=" * 60, file=sys.stderr)
+        print("FATAL ERROR: GITHUB_WEBHOOK_SECRET is not set", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+        print(
+            "Without it every request to /webhook would be trusted, letting "
+            "anyone who can reach this port run the agent against your "
+            "repositories.",
+            file=sys.stderr,
+        )
+        print(
+            "\nSet GITHUB_WEBHOOK_SECRET to the secret configured on your "
+            "GitHub App, or set ALLOW_UNSIGNED_WEBHOOKS=true if this is a "
+            "local development instance that nothing else can reach.",
+            file=sys.stderr,
+        )
+        print("=" * 60 + "\n", file=sys.stderr)
+        sys.exit(1)
+    logger.warning(
+        "ALLOW_UNSIGNED_WEBHOOKS is enabled - every request to /webhook is "
+        "trusted. Never run this on a reachable deployment."
+    )
+
 app = FastAPI(title="ClaudeCodeGitHubAgent Webhook Service")
 
 # Initialize queue
 queue = get_queue()
 sync_queue = get_queue(queue_name="agent:sync:requests")
 cleanup_queue = get_queue(queue_name="agent:worktree:cleanup")
+
+# Drops replayed GitHub deliveries (automatic retries, manual redeliveries)
+# before they can queue a second copy of the same job.
+deduplicator = WebhookDeduplicator()
 
 # Initialize workflow engine for event filtering
 try:
@@ -91,21 +123,44 @@ def _extract_body(event_type: str, action: str, data: dict) -> str | None:
 @app.post("/webhook")
 async def webhook(request: Request):
     """Handle GitHub webhook events."""
+    # Bound before the try so the error path can always release the claim.
+    delivery_id = ""
     try:
         # Get payload and headers
         payload = await request.body()
         signature = request.headers.get("X-Hub-Signature-256", "")
         event_type = request.headers.get("X-GitHub-Event", "")
 
-        # Verify signature
+        # Verify signature. Startup already refuses an unset secret unless
+        # ALLOW_UNSIGNED_WEBHOOKS is on; this re-checks per request so a
+        # config reload can never silently drop verification.
         webhook_secret = config.github.github_webhook_secret
-        if webhook_secret and not verify_signature(payload, signature, webhook_secret):
-            logger.warning(
-                "Webhook signature verification failed for %s event from %s",
+        if webhook_secret:
+            if not verify_signature(payload, signature, webhook_secret):
+                logger.warning(
+                    "Webhook signature verification failed for %s event from %s",
+                    event_type,
+                    request.client.host if request.client else "unknown",
+                )
+                raise HTTPException(status_code=401, detail="Invalid signature")
+        elif not config.allow_unsigned_webhooks:
+            logger.error("Rejecting %s event: no webhook secret configured", event_type)
+            raise HTTPException(status_code=500, detail="Webhook secret not configured")
+
+        # Drop replays. Deliberately after signature verification so an
+        # unauthenticated caller cannot poison the dedup cache with a
+        # delivery id it guessed, suppressing the genuine delivery.
+        delivery_id = request.headers.get("X-GitHub-Delivery", "")
+        if not await deduplicator.claim(delivery_id):
+            logger.info(
+                "Duplicate delivery %s (%s event) — already processed, ignoring",
+                delivery_id,
                 event_type,
-                request.client.host if request.client else "unknown",
             )
-            raise HTTPException(status_code=401, detail="Invalid signature")
+            return {
+                "status": "duplicate",
+                "message": "Delivery already processed",
+            }
 
         # Parse payload
         data = await request.json()
@@ -326,8 +381,13 @@ async def webhook(request: Request):
         }
 
     except HTTPException:
+        # Deterministic rejections (401, 422) keep their claim — a replay
+        # would be rejected identically.
         raise
     except Exception as e:
+        # Unexpected failure: GitHub will retry, so give the claim back or
+        # the retry would be silently dropped as a duplicate.
+        await deduplicator.release(delivery_id)
         logger.error("Error processing webhook: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
 

@@ -238,6 +238,7 @@ Configure dependency installation and build commands per repo in `repo-setup.yam
 | Document                                 | Description                           |
 | ---------------------------------------- | ------------------------------------- |
 | [Architecture](docs/ARCHITECTURE.md)     | System design, components, data flows |
+| [Security](docs/SECURITY.md)             | Threat model, trust boundary, exposure |
 | [Development](docs/DEVELOPMENT.md)       | Testing, deployment, contributing     |
 | [Workflows](docs/WORKFLOWS.md)           | Creating and managing workflows       |
 | [Configuration](docs/CONFIGURATION.md)   | Environment variables reference       |

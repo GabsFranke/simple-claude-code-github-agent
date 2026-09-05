@@ -289,7 +289,10 @@ services:
     env_file: .env
     restart: unless-stopped
     ports:
-      - "10001:8000"
+      # Loopback-only: the session UI and its WebSocket carry no authentication,
+      # so the host is the trust boundary (see docs/SECURITY.md). Use an SSH
+      # tunnel to reach it from another machine rather than widening this.
+      - "127.0.0.1:10001:8000"
     volumes:
       - ~/.claude:/home/bot/.claude:ro
       - ./logs:/var/log/bot

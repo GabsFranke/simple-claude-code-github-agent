@@ -8,6 +8,7 @@ Environment variable overrides:
     HISTORY_MAX                  — max messages in Redis history list (default: 2000)
     JOB_TTL_SECONDS              — job data TTL in Redis (default: 3600)
     MAX_AUTO_CONTINUES           — max auto-continue iterations (default: 10)
+    WEBHOOK_DEDUP_TTL_SECONDS    — webhook delivery dedup window (default: 86400)
 """
 
 import os
@@ -40,6 +41,14 @@ HISTORY_TTL_SECONDS = 3600
 
 # Orphan cleanup lock TTL (1 hour).
 ORPHAN_LOCK_TTL_SECONDS = 3600
+
+# Webhook delivery dedup window (24 hours).
+#
+# GitHub retries failed deliveries and lets maintainers redeliver manually,
+# so the same ``X-GitHub-Delivery`` id can arrive more than once.  Delivery
+# ids are remembered for this long to drop replays.  A manual redelivery
+# after the window expires is processed again by design.
+WEBHOOK_DEDUP_TTL_SECONDS = int(os.getenv("WEBHOOK_DEDUP_TTL_SECONDS", "86400"))
 
 # ---------------------------------------------------------------------------
 # Limits
@@ -78,6 +87,9 @@ SESSION_HISTORY_KEY = "session:history:{}"
 # Streaming channels
 MSG_CHANNEL = "session:msg:{}"
 CTL_CHANNEL = "session:ctl:{}"
+
+# Webhook delivery deduplication
+WEBHOOK_DEDUP_KEY = "agent:webhook:delivery:{}"
 
 # Session-aware job deduplication lock
 SESSION_DEDUP_KEY = "agent:session:lock:{}"
@@ -253,3 +265,22 @@ def decode_redis_hash(data: dict[bytes | str, bytes | str]) -> dict[str, str]:
         )
         for k, v in data.items()
     }
+
+
+def webhook_dedup_key(delivery_id: str) -> str:
+    """Build the Redis key that records a processed GitHub webhook delivery.
+
+    GitHub assigns every delivery a unique ``X-GitHub-Delivery`` UUID and
+    reuses it for automatic retries and manual redeliveries.  Claiming the
+    key with SETNX makes the receiver idempotent: exactly one delivery with
+    a given id gets queued, replays are dropped.
+
+    Redis type: String (with TTL)
+    TTL: ``WEBHOOK_DEDUP_TTL_SECONDS`` (24 h)
+    Written by: ``WebhookDeduplicator.claim()`` (SETNX on receipt)
+    Cleared by: ``WebhookDeduplicator.release()`` (only when handling failed
+                unexpectedly, so GitHub's retry can be processed)
+
+    Returns a key like ``agent:webhook:delivery:{delivery_id}``.
+    """
+    return WEBHOOK_DEDUP_KEY.format(delivery_id)

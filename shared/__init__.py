@@ -82,6 +82,8 @@ _LAZY_NAMES = {
     "async_retry": ".retry",
     # Signals
     "setup_graceful_shutdown": ".signals",
+    # Webhook dedup
+    "WebhookDeduplicator": ".webhook_dedup",
     # Utils
     "_MISSING": ".utils",
     "resolve_path": ".utils",

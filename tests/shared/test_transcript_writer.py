@@ -510,3 +510,128 @@ def _write_jsonl(path: Path, entries: list[dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for entry in entries:
             f.write(json.dumps(entry) + "\n")
+
+
+# ── SDK Hook Invocation Contract ──────────────────────────────────────────────
+
+
+class TestSDKInvocationContract:
+    """Handlers must be callable the way the SDK actually calls them.
+
+    ``claude_agent_sdk._internal.query`` dispatches every hook as::
+
+        await callback(input, tool_use_id, context)
+
+    Handlers that accept only ``input`` type-check and unit-test fine in
+    isolation but raise ``TypeError`` for every real invocation, silently
+    losing the transcript. These tests exercise the three-argument form so
+    that regression cannot pass CI again.
+    """
+
+    SDK_CONTEXT = {"signal": None}
+
+    @pytest.fixture
+    def hook(self, tmp_path):
+        from shared.transcript_writer import IncrementalTranscriptHook
+
+        return IncrementalTranscriptHook(str(tmp_path / "t.jsonl"))
+
+    @pytest.mark.parametrize(
+        "handler_name",
+        [
+            "on_post_tool_use",
+            "on_user_prompt_submit",
+            "on_stop",
+            "on_subagent_stop",
+        ],
+    )
+    def test_handler_accepts_three_positional_arguments(self, hook, handler_name):
+        """Arity check, independent of what any single handler does."""
+        import inspect
+
+        handler = getattr(hook, handler_name)
+        positional = [
+            p
+            for p in inspect.signature(handler).parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
+        ]
+        assert len(positional) >= 3, (
+            f"{handler_name} accepts {len(positional)} positional arg(s); the SDK "
+            "calls hooks with (input, tool_use_id, context)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_post_tool_use_invoked_as_sdk_does(self, hook, tmp_path):
+        result = await hook.on_post_tool_use(
+            {"tool_name": "Read", "session_id": "s1"},
+            "toolu_abc123",
+            self.SDK_CONTEXT,
+        )
+        assert result == {"continue_": True}
+
+        entries = _read_entries(tmp_path / "t.jsonl")
+        assert entries[0]["tool_name"] == "Read"
+
+    @pytest.mark.asyncio
+    async def test_positional_tool_use_id_is_recorded(self, hook, tmp_path):
+        """The SDK passes tool_use_id positionally, not inside the payload."""
+        await hook.on_post_tool_use(
+            {"tool_name": "Read", "session_id": "s1"},
+            "toolu_abc123",
+            self.SDK_CONTEXT,
+        )
+        entries = _read_entries(tmp_path / "t.jsonl")
+        assert entries[0]["tool_use_id"] == "toolu_abc123"
+
+    @pytest.mark.asyncio
+    async def test_payload_tool_use_id_still_used_when_not_passed(self, hook, tmp_path):
+        await hook.on_post_tool_use(
+            {"tool_name": "Read", "tool_use_id": "from_payload"},
+            None,
+            self.SDK_CONTEXT,
+        )
+        entries = _read_entries(tmp_path / "t.jsonl")
+        assert entries[0]["tool_use_id"] == "from_payload"
+
+    @pytest.mark.asyncio
+    async def test_user_prompt_submit_invoked_as_sdk_does(self, hook, tmp_path):
+        result = await hook.on_user_prompt_submit(
+            {"prompt": "hello", "session_id": "s1"}, None, self.SDK_CONTEXT
+        )
+        assert result == {"continue_": True}
+
+        entries = _read_entries(tmp_path / "t.jsonl")
+        assert entries[0]["prompt"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_stop_invoked_as_sdk_does(self, hook):
+        result = await hook.on_stop({"session_id": "s1"}, None, self.SDK_CONTEXT)
+        assert result == {"continue_": True}
+
+    @pytest.mark.asyncio
+    async def test_subagent_stop_invoked_as_sdk_does(self, hook):
+        result = await hook.on_subagent_stop(
+            {"session_id": "s1"}, None, self.SDK_CONTEXT
+        )
+        assert result == {"continue_": True}
+
+    @pytest.mark.asyncio
+    async def test_registered_callbacks_are_invocable_as_registered(self, hook):
+        """Walk build_hooks_dict() and call each callback the SDK's way."""
+        for event, matchers in hook.build_hooks_dict().items():
+            for matcher in matchers:
+                for callback in matcher.hooks:
+                    result = await callback(
+                        {"session_id": "s1", "tool_name": "Read", "prompt": "p"},
+                        "toolu_1",
+                        self.SDK_CONTEXT,
+                    )
+                    assert result == {"continue_": True}, f"{event} handler misbehaved"
+
+
+def _read_entries(path) -> list[dict]:
+    """Parse a JSONL transcript into a list of entries."""
+    import json as _json
+
+    with open(path, encoding="utf-8") as f:
+        return [_json.loads(line) for line in f if line.strip()]

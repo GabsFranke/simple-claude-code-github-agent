@@ -195,6 +195,14 @@ class WebhookConfig(BaseConfig):
         description="Bot GitHub username for preventing infinite loops",
         alias="WEBHOOK_BOT_USERNAME",
     )
+    allow_unsigned_webhooks: bool = Field(
+        default=False,
+        description=(
+            "Accept webhooks without HMAC signature verification. Local "
+            "development only — never enable on a reachable deployment."
+        ),
+        alias="ALLOW_UNSIGNED_WEBHOOKS",
+    )
 
     _github_config: GitHubConfig | None = None
     _queue_config: QueueConfig | None = None

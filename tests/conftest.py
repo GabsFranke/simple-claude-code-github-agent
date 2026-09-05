@@ -117,15 +117,26 @@ def mock_httpx_client() -> AsyncMock:
     return client
 
 
+# Redis credentials for integration tests come from the environment so no
+# real password is ever committed. Point TEST_REDIS_PASSWORD at your local
+# Docker Redis (see .env.example); tests skip when Redis is unreachable.
+TEST_REDIS_HOST = os.getenv("TEST_REDIS_HOST", "localhost")
+TEST_REDIS_PORT = int(os.getenv("TEST_REDIS_PORT", "6379"))
+TEST_REDIS_PASSWORD = os.getenv("TEST_REDIS_PASSWORD") or os.getenv("REDIS_PASSWORD")
+TEST_REDIS_DB = int(os.getenv("TEST_REDIS_DB", "15"))
+TEST_REDIS_URL = os.getenv(
+    "TEST_REDIS_URL", f"redis://{TEST_REDIS_HOST}:{TEST_REDIS_PORT}"
+)
+
+
 @pytest_asyncio.fixture
 async def redis_client():
     """Create real Redis client for integration testing."""
-    # Use password from Docker setup
     client = Redis(
-        host="localhost",
-        port=6379,
-        password="S5e_V7kdhPOI9DNJfBvYodxJgeQCG8Xup2mG3rBPwDU",
-        db=15,
+        host=TEST_REDIS_HOST,
+        port=TEST_REDIS_PORT,
+        password=TEST_REDIS_PASSWORD,
+        db=TEST_REDIS_DB,
         decode_responses=True,
     )
     try:

@@ -12,6 +12,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +159,22 @@ class IncrementalTranscriptHook:
 
     # ── Hook handlers ───────────────────────────────────────────────────
 
-    async def on_post_tool_use(self, input_data: dict) -> dict:
+    async def on_post_tool_use(
+        self,
+        input_data: dict,
+        tool_use_id: str | None = None,
+        context: Any = None,
+    ) -> dict:
         """Handle PostToolUse hook event.
 
         Writes a tool-use entry to the transcript immediately after every
         successful tool execution.
+
+        Args:
+            input_data: The SDK hook payload.
+            tool_use_id: Tool use identifier, passed positionally by the
+                SDK and preferred over the payload copy when present.
+            context: SDK hook context (abort signal placeholder); unused.
         """
         self._resolve_path(input_data)
 
@@ -171,7 +183,7 @@ class IncrementalTranscriptHook:
             "hook_event": "PostToolUse",
             "tool_name": input_data.get("tool_name", "unknown"),
             "tool_input": input_data.get("tool_input", {}),
-            "tool_use_id": input_data.get("tool_use_id", ""),
+            "tool_use_id": tool_use_id or input_data.get("tool_use_id", ""),
             "session_id": input_data.get("session_id", ""),
             "agent_id": input_data.get("agent_id"),
             "agent_type": input_data.get("agent_type"),
@@ -182,7 +194,12 @@ class IncrementalTranscriptHook:
         await self._append_line(entry)
         return {"continue_": True}
 
-    async def on_user_prompt_submit(self, input_data: dict) -> dict:
+    async def on_user_prompt_submit(
+        self,
+        input_data: dict,
+        tool_use_id: str | None = None,
+        context: Any = None,
+    ) -> dict:
         """Handle UserPromptSubmit hook event.
 
         Writes a user-prompt entry to the transcript immediately when
@@ -199,7 +216,12 @@ class IncrementalTranscriptHook:
         await self._append_line(entry)
         return {"continue_": True}
 
-    async def on_stop(self, input_data: dict) -> dict:
+    async def on_stop(
+        self,
+        input_data: dict,
+        tool_use_id: str | None = None,
+        context: Any = None,
+    ) -> dict:
         """Handle Stop hook event.
 
         Syncs the SDK's complete transcript (from transcriptPath) to the
@@ -215,7 +237,12 @@ class IncrementalTranscriptHook:
 
         return {"continue_": True}
 
-    async def on_subagent_stop(self, input_data: dict) -> dict:
+    async def on_subagent_stop(
+        self,
+        input_data: dict,
+        tool_use_id: str | None = None,
+        context: Any = None,
+    ) -> dict:
         """Handle SubagentStop hook event.
 
         Syncs the subagent's transcript to the durable file.
@@ -270,19 +297,22 @@ class IncrementalTranscriptHook:
         Returns:
             dict: Hook event → [HookMatcher, ...] mapping
         """
+        matcher_cls: Any
         try:
             from claude_agent_sdk import HookMatcher
+
+            matcher_cls = HookMatcher
         except ImportError:
             # Allow testing without the SDK installed
-            HookMatcher = _FakeHookMatcher  # type: ignore[assignment]
+            matcher_cls = _FakeHookMatcher
 
         return {
-            "PostToolUse": [HookMatcher(matcher="*", hooks=[self.on_post_tool_use])],
+            "PostToolUse": [matcher_cls(matcher="*", hooks=[self.on_post_tool_use])],
             "UserPromptSubmit": [
-                HookMatcher(matcher="*", hooks=[self.on_user_prompt_submit])
+                matcher_cls(matcher="*", hooks=[self.on_user_prompt_submit])
             ],
-            "Stop": [HookMatcher(matcher="*", hooks=[self.on_stop])],
-            "SubagentStop": [HookMatcher(matcher="*", hooks=[self.on_subagent_stop])],
+            "Stop": [matcher_cls(matcher="*", hooks=[self.on_stop])],
+            "SubagentStop": [matcher_cls(matcher="*", hooks=[self.on_subagent_stop])],
         }
 
 

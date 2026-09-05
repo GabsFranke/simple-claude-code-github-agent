@@ -14,10 +14,11 @@ import logging
 import re
 import shutil
 import warnings
+from collections.abc import Awaitable
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 try:
     import redis.asyncio as aioredis
@@ -25,6 +26,12 @@ try:
     RedisClient = aioredis.Redis
 except ImportError:
     RedisClient = Any  # type: ignore[assignment, misc]
+
+# redis-py shares one set of command signatures between its sync and async
+# clients, so commands with a concrete return type are annotated
+# ``Awaitable[T] | T``.  The async client always returns the awaitable half,
+# but mypy cannot know that, so calls below are cast to ``Awaitable[T]``
+# before being awaited.  The casts are erased at runtime.
 
 from pydantic import BaseModel, Field
 
@@ -725,7 +732,7 @@ class SessionStore:  # pylint: disable=too-many-public-methods
         or the data is corrupt.
         """
         key = streaming_session_key(token)
-        data = await self.redis.hgetall(key)
+        data = await cast(Awaitable[dict], self.redis.hgetall(key))
         if not data:
             return None
         decoded = decode_redis_hash(data)
@@ -771,7 +778,7 @@ class SessionStore:  # pylint: disable=too-many-public-methods
         else:
             token_val = raw  # type: ignore[assignment]
         stream_key = streaming_session_key(token_val)
-        exists = await self.redis.hgetall(stream_key)
+        exists = await cast(Awaitable[dict], self.redis.hgetall(stream_key))
         if exists:
             return token_val
         await self.redis.delete(lk)
@@ -794,7 +801,7 @@ class SessionStore:  # pylint: disable=too-many-public-methods
         if not token:
             return None
         stream_key = streaming_session_key(token)
-        data = await self.redis.hgetall(stream_key)
+        data = await cast(Awaitable[dict], self.redis.hgetall(stream_key))
         if not data:
             return None
         decoded = decode_redis_hash(data)
@@ -820,11 +827,14 @@ class SessionStore:  # pylint: disable=too-many-public-methods
         key = streaming_session_key(token)
         status = "error" if is_error else "completed"
         if session_id:
-            await self.redis.hset(
-                key, mapping={"status": status, "session_id": session_id}
+            await cast(
+                Awaitable[int],
+                self.redis.hset(
+                    key, mapping={"status": status, "session_id": session_id}
+                ),
             )
         else:
-            await self.redis.hset(key, "status", status)
+            await cast(Awaitable[int], self.redis.hset(key, "status", status))
         logger.info(f"[SessionStore] Streaming session {token[:8]}... -> {status}")
 
     async def set_running(
@@ -837,12 +847,15 @@ class SessionStore:  # pylint: disable=too-many-public-methods
         SPA can still load conversation history while the new run begins.
         """
         key = streaming_session_key(token)
-        await self.redis.hset(
-            key,
-            mapping={
-                "status": "running",
-                "session_id": "",
-            },
+        await cast(
+            Awaitable[int],
+            self.redis.hset(
+                key,
+                mapping={
+                    "status": "running",
+                    "session_id": "",
+                },
+            ),
         )
         await self.redis.expire(key, ttl_seconds)
         logger.info(f"[SessionStore] Streaming session {token[:8]}... -> running")
@@ -876,15 +889,20 @@ class SessionStore:  # pylint: disable=too-many-public-methods
     async def increment_subscribers(self, token: str) -> int:
         """Atomically increment subscriber count. Returns new count."""
         key = subscribers_key(token)
-        count = await self.redis.eval(
-            _INCR_SUBSCRIBERS_LUA, 1, key, str(DEFAULT_SESSION_TTL_SECONDS)
+        count = await cast(
+            Awaitable[Any],
+            self.redis.eval(
+                _INCR_SUBSCRIBERS_LUA, 1, key, str(DEFAULT_SESSION_TTL_SECONDS)
+            ),
         )
         return int(count)
 
     async def decrement_subscribers(self, token: str) -> int:
         """Atomically decrement subscriber count (floor 0). Returns new count."""
         key = subscribers_key(token)
-        count = await self.redis.eval(_DECR_SUBSCRIBERS_LUA, 1, key)
+        count = await cast(
+            Awaitable[Any], self.redis.eval(_DECR_SUBSCRIBERS_LUA, 1, key)
+        )
         return int(count)
 
     async def has_subscribers(self, token: str) -> bool:
@@ -903,7 +921,7 @@ class SessionStore:  # pylint: disable=too-many-public-methods
     async def get_history(self, token: str) -> list[dict]:
         """Fetch the full persistent message history (LRANGE + JSON parse)."""
         key = history_key(token)
-        raw_messages = await self.redis.lrange(key, 0, -1)
+        raw_messages = await cast(Awaitable[list], self.redis.lrange(key, 0, -1))
         result: list[dict] = []
         for raw in raw_messages:
             try:
@@ -921,7 +939,7 @@ class SessionStore:  # pylint: disable=too-many-public-methods
         """Push a user message into the session inbox."""
         ibx = inbox_key(token)
         message_data = json.dumps({"type": "user_message", "content": content})
-        await self.redis.rpush(ibx, message_data)
+        await cast(Awaitable[int], self.redis.rpush(ibx, message_data))
         await self.redis.expire(ibx, DEFAULT_SESSION_TTL_SECONDS)
 
     async def pop_inbox_messages(self, token: str) -> list[str]:
@@ -938,7 +956,7 @@ class SessionStore:  # pylint: disable=too-many-public-methods
         return items
         """
         try:
-            raw_items = await self.redis.eval(lua_drain, 1, ibx)
+            raw_items = await cast(Awaitable[Any], self.redis.eval(lua_drain, 1, ibx))
         except Exception as e:
             logger.error(f"[SessionStore] Failed to drain inbox for {token}: {e}")
             raise
@@ -961,19 +979,19 @@ class SessionStore:  # pylint: disable=too-many-public-methods
     async def update_session_id(self, token: str, session_id: str) -> None:
         """Update the SDK session_id in the streaming session metadata."""
         key = streaming_session_key(token)
-        await self.redis.hset(key, "session_id", session_id)
+        await cast(Awaitable[int], self.redis.hset(key, "session_id", session_id))
         logger.debug(f"[SessionStore] Updated session_id for {token[:8]}...")
 
     async def update_transcript_path(self, token: str, path: str) -> None:
         """Update the transcript_path in the streaming session metadata."""
         key = streaming_session_key(token)
-        await self.redis.hset(key, "transcript_path", path)
+        await cast(Awaitable[int], self.redis.hset(key, "transcript_path", path))
         logger.debug(f"[SessionStore] Updated transcript_path for {token[:8]}...")
 
     async def increment_run_count(self, token: str) -> int:
         """Increment the run count. Returns new count."""
         key = streaming_session_key(token)
-        count = await self.redis.hincrby(key, "run_count", 1)
+        count = await cast(Awaitable[int], self.redis.hincrby(key, "run_count", 1))
         return int(count)
 
     # ------------------------------------------------------------------
