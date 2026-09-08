@@ -24,28 +24,6 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT_BUDGET = 12_000
 
 
-def _get_model_from_settings(env_key: str) -> str | None:
-    """Read a model name from ~/.claude/settings.json env section.
-
-    Precedence: settings.json env > OS env var > None.
-
-    The Claude Agent SDK reads settings.json via its setting_sources
-    parameter, but we set the model explicitly via ClaudeAgentOptions,
-    so we must resolve it ourselves with the same precedence.
-    """
-    settings_path = Path.home() / ".claude" / "settings.json"
-    if settings_path.exists():
-        try:
-            with open(settings_path, encoding="utf-8") as f:
-                settings = json.load(f)
-            value = settings.get("env", {}).get(env_key)
-            if value:
-                return str(value)
-        except Exception:
-            pass
-    return os.getenv(env_key)
-
-
 def _discover_host_mcp_names(cwd: str | None = None) -> list[str]:
     """Read MCP server names from ~/.claude.json for allowed_tools."""
     claude_json = Path.home() / ".claude.json"
@@ -125,7 +103,7 @@ class SDKOptionsBuilder:
         """Set a specific model.
 
         Args:
-            model: Model identifier (e.g., "claude-sonnet-4-20250514")
+            model: Model identifier (e.g., "claude-sonnet-5")
 
         Returns:
             Self for method chaining
@@ -139,10 +117,7 @@ class SDKOptionsBuilder:
         Returns:
             Self for method chaining
         """
-        self._model = (
-            _get_model_from_settings("ANTHROPIC_DEFAULT_SONNET_MODEL")
-            or "claude-sonnet-4-20250514"
-        )
+        self._model = "sonnet"
         return self
 
     def with_haiku(self) -> "SDKOptionsBuilder":
@@ -151,10 +126,7 @@ class SDKOptionsBuilder:
         Returns:
             Self for method chaining
         """
-        self._model = (
-            _get_model_from_settings("ANTHROPIC_DEFAULT_HAIKU_MODEL")
-            or "claude-haiku-4-5-20251001"
-        )
+        self._model = "haiku"
         return self
 
     def with_max_buffer_size(self, size: int) -> "SDKOptionsBuilder":
@@ -839,13 +811,6 @@ class SDKOptionsBuilder:
         Returns:
             Configured ClaudeAgentOptions instance
         """
-        # Default to Sonnet if no model specified
-        if not self._model:
-            self._model = (
-                _get_model_from_settings("ANTHROPIC_DEFAULT_SONNET_MODEL")
-                or "claude-sonnet-4-20250514"
-            )
-
         # Assemble final system prompt with budget enforcement
         self._system_prompt = self._assemble_system_prompt()
 

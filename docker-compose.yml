@@ -45,7 +45,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -285,7 +285,7 @@ services:
     build:
       context: .
       dockerfile: services/session_service/Dockerfile
-    command: sh -c 'uvicorn main:app --host 0.0.0.0 --port 8000 2>&1 | tee /var/log/bot/session_service.log'
+    command: sh -c 'uvicorn services.session_service.main:app --host 0.0.0.0 --port 8000 2>&1 | tee /var/log/bot/session_service.log'
     env_file: .env
     restart: unless-stopped
     ports:
